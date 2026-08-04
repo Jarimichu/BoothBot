@@ -2,6 +2,16 @@
 
 All notable changes to BoothBot are documented in this file.
 
+## [1.5.0] - 2026-08-04
+
+### Added
+- Remote monitoring dashboard: BoothBot now hosts a small read-only web page (stdlib `http.server` only, no new dependency) reachable on the local network while the fullscreen booth is running - live status (camera health, booth state, time since last photo, consecutive failures, most recent error) plus the same hourly photo chart as the setup screen's Logs tab, auto-refreshing every 10 seconds.
+- New "Remote Monitor" section in the General tab: enable/disable, port, a "Show the monitor URL on the start page" toggle, and a URL preview with a Copy button so it can be found before the booth even starts.
+- The monitor URL is shown small and dim in the corner of the fullscreen start page (when enabled) as confirmation the server actually started.
+
+### Changed
+- The server starts and stops with the fullscreen booth session only - it's never running while the setup screen is open, and binding failures (e.g. a busy port) can never take the booth down, falling back through nearby ports automatically.
+
 ## [1.4.0] - 2026-08-04
 
 ### Added

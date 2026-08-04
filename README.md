@@ -1,5 +1,5 @@
 # BoothBot
-**Version 1.4.0** ([changelog](CHANGELOG.md))
+**Version 1.5.0** ([changelog](CHANGELOG.md))
 
 Button-triggered photobooth for events - snaps a photo from a webcam after a countdown and auto-posts it to Telegram/Discord.
 
@@ -16,7 +16,7 @@ Button-triggered photobooth for events - snaps a photo from a webcam after a cou
    python run.py
    ```
    A **setup window** opens first with a live camera preview on the left (camera index is a dropdown right below it - pick one and it refreshes automatically) and the rest of the settings organized into tabs on the right:
-   - **General**: capture button key / quit key (click the field, then press the actual button/key you want - no need to know its name), the fullscreen toggle, and **Remember these settings for next time** (checked by default) - uncheck it to try something out for this run only without overwriting `config.json`.
+   - **General**: capture button key / quit key (click the field, then press the actual button/key you want - no need to know its name), the fullscreen toggle, and **Remember these settings for next time** (checked by default) - uncheck it to try something out for this run only without overwriting `config.json`. Below that, **Remote Monitor**: an "Enable remote monitor" checkbox (on by default), the port it listens on, a "Show the monitor URL on the start page" checkbox (off by default - the setup screen is the normal way to find the URL, so guests don't see it), and a preview of the URL with a **Copy** button - see [Remote monitoring](#remote-monitoring) below.
    - **Start Page**: the message and optional logo shown fullscreen when the app first launches, before the live camera view (click Browse to pick a PNG/JPG for the logo, Clear to remove it). Pressing the capture button/key here moves on to the live view.
    - **Live View**: the message shown on the TV before a group presses the button, and the countdown length (a dropdown of common values - 3 to 10 seconds - but still editable if you want something else).
    - **Post View**: how long the captured photo is shown (dropdown), the top/bottom messages overlaid on it (e.g. "Thanks for coming to the con!" / "Please see your photo on the Telegram channel"), the "Scale review photo to 75%" checkbox (checked by default - shrinks and centers the photo so those messages sit clearly above/below it instead of overlapping), and how long the send-succeeded/failed message is shown afterward (dropdown).
@@ -37,6 +37,16 @@ Once fullscreen, press `Esc` (or whichever quit key you configured) to return to
 - **Photo review**: displays the captured photo by itself for the configured number of seconds, while any enabled upload happens behind the scenes.
 - **Result**: shows a success/failure message (waiting for the upload to finish first, if one is in progress) for the configured number of seconds, then returns to the start page. If both Discord and Telegram are disabled, this just confirms the photo was saved locally.
 - **Capture log**: every photo attempt (successful or not) is appended to `logs/captures.csv` - timestamp, whether it saved locally, and whether each enabled destination succeeded. The setup screen's Logs tab reads this to show the hourly chart.
+
+## Remote monitoring
+
+While the fullscreen booth view is running (not during setup), BoothBot hosts a small read-only web dashboard on the local network - useful for checking on an unattended booth from a phone without walking up to it and interrupting a guest's photo.
+
+- **Reachable only while the booth is live.** The server starts when you click Start Photobooth and stops the moment you return to setup - it's never running otherwise.
+- **No login required.** It's open to anyone on the same network, but only shows stats and status (booth state, camera health, recent errors, hourly photo counts) - never photos, webhook URLs, or bot tokens.
+- **Finding the URL**: the setup screen's General tab shows it ahead of time, with a Copy button (the LAN IP is knowable before the server even starts). You can also check "Show the monitor URL on the start page" (off by default, so guests at the booth don't see it) to have it appear small and dim in the bottom-left corner of the fullscreen start page as confirmation it started. Auto-refreshes every 10 seconds (a "pause auto-refresh" link is there for reading a long error message without the page jumping).
+- **Windows Firewall**: the first time something connects, Windows may prompt to allow BoothBot through the firewall on private networks - allow it, or nothing on your network will be able to load the page.
+- Turn it off entirely or change the port via the General tab's Remote Monitor section.
 
 ## Packaging as a standalone .exe
 
