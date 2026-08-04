@@ -1,6 +1,6 @@
 """A Tkinter setup screen (with a live webcam preview) shown before the fullscreen booth view."""
 import tkinter as tk
-from tkinter import messagebox, ttk
+from tkinter import filedialog, messagebox, ttk
 
 from PIL import Image, ImageTk
 
@@ -28,6 +28,10 @@ class SetupWindow:
         self.photo_review_var = tk.IntVar(value=config_data.get("photo_review_seconds", 5))
         self.post_capture_var = tk.IntVar(value=config_data.get("post_capture_display_seconds", 4))
         self.fullscreen_var = tk.BooleanVar(value=config_data.get("fullscreen", True))
+        self.start_message_var = tk.StringVar(
+            value=config_data.get("start_message", "Press button to start photobooth!")
+        )
+        self.start_logo_path_var = tk.StringVar(value=config_data.get("start_logo_path", ""))
         self.prompt_message_var = tk.StringVar(value=config_data.get("prompt_message", "Press the button to take a photo!"))
         self.review_message_top_var = tk.StringVar(
             value=config_data.get("review_message_top", "Thanks for coming to the con!")
@@ -76,6 +80,17 @@ class SetupWindow:
 
         # --- Right: settings form ---
         row = 0
+        ttk.Label(right, text="Start Page", font=("Segoe UI", 12, "bold")).grid(
+            row=row, column=0, columnspan=2, sticky="w"
+        )
+        row += 1
+
+        row = self._add_entry(right, row, "Start page message:", self.start_message_var, width=36)
+        row = self._add_logo_picker(right, row, "Start page logo:")
+
+        ttk.Separator(right, orient="horizontal").grid(row=row, column=0, columnspan=2, sticky="ew", pady=8)
+        row += 1
+
         ttk.Label(right, text="Booth Settings", font=("Segoe UI", 12, "bold")).grid(
             row=row, column=0, columnspan=2, sticky="w"
         )
@@ -123,6 +138,15 @@ class SetupWindow:
         ttk.Entry(parent, textvariable=var, width=width).grid(row=row, column=1, sticky="w")
         return row + 1
 
+    def _add_logo_picker(self, parent, row, label):
+        ttk.Label(parent, text=label).grid(row=row, column=0, sticky="w", pady=3)
+        file_row = ttk.Frame(parent)
+        file_row.grid(row=row, column=1, sticky="w")
+        ttk.Entry(file_row, textvariable=self.start_logo_path_var, width=20, state="readonly").pack(side="left")
+        ttk.Button(file_row, text="Browse...", command=self._on_browse_logo).pack(side="left", padx=(6, 0))
+        ttk.Button(file_row, text="Clear", command=self._on_clear_logo).pack(side="left", padx=(4, 0))
+        return row + 1
+
     def _add_key_capture(self, parent, row, label, var):
         ttk.Label(parent, text=label).grid(row=row, column=0, sticky="w", pady=3)
         entry = ttk.Entry(parent, textvariable=var, width=12, state="readonly")
@@ -151,6 +175,17 @@ class SetupWindow:
 
     def _on_refresh_camera(self):
         self._open_camera(self.camera_index_var.get())
+
+    def _on_browse_logo(self):
+        path = filedialog.askopenfilename(
+            title="Choose a start page logo",
+            filetypes=[("Image files", "*.png *.jpg *.jpeg *.gif *.bmp"), ("All files", "*.*")],
+        )
+        if path:
+            self.start_logo_path_var.set(path)
+
+    def _on_clear_logo(self):
+        self.start_logo_path_var.set("")
 
     def _update_preview(self):
         frame = self.camera.read_frame_rgb() if self.camera is not None else None
@@ -184,6 +219,8 @@ class SetupWindow:
             "photo_review_seconds": self.photo_review_var.get(),
             "post_capture_display_seconds": self.post_capture_var.get(),
             "fullscreen": self.fullscreen_var.get(),
+            "start_message": self.start_message_var.get().strip(),
+            "start_logo_path": self.start_logo_path_var.get().strip(),
             "prompt_message": self.prompt_message_var.get().strip(),
             "review_message_top": self.review_message_top_var.get().strip(),
             "review_message_bottom": self.review_message_bottom_var.get().strip(),

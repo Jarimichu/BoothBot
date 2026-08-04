@@ -1,14 +1,16 @@
-"""Fullscreen kiosk photobooth: live preview -> countdown -> capture -> upload."""
+"""Fullscreen kiosk photobooth: start page -> live preview -> countdown -> capture -> upload."""
 import queue
 import threading
 import time
 from datetime import datetime
+from pathlib import Path
 
 import pygame
 
 from . import __version__, uploader
 from .camera import Camera, CameraError
 
+START = "start"
 LIVE = "live"
 COUNTDOWN = "countdown"
 FLASH = "flash"
@@ -21,6 +23,7 @@ BLACK = (0, 0, 0)
 GREEN = (80, 220, 100)
 RED = (230, 70, 70)
 FLASH_DURATION_S = 0.15
+LIVE_IDLE_TIMEOUT_S = 30
 
 
 def frame_to_surface(frame_rgb):
@@ -66,11 +69,29 @@ class BoothApp:
         self.camera = Camera(config.camera_index)
         self.clock = pygame.time.Clock()
 
-        self.state = LIVE
+        self.start_logo_surface = self._load_start_logo()
+
+        self.state = START
         self.state_entered_at = time.time()
         self.countdown_start = None
         self.captured_frame = None
         self.result_lines = []
+
+    def _load_start_logo(self):
+        if not self.config.start_logo_path:
+            return None
+        logo_path = Path(self.config.start_logo_path)
+        if not logo_path.exists():
+            print(f"Start logo not found: {logo_path}")
+            return None
+        try:
+            image = pygame.image.load(str(logo_path)).convert_alpha()
+        except pygame.error as exc:
+            print(f"Could not load start logo '{logo_path}': {exc}")
+            return None
+        max_box = (int(self.screen_size[0] * 0.5), int(self.screen_size[1] * 0.45))
+        scaled, _ = scale_to_fit(image, max_box)
+        return scaled
 
     def run(self):
         running = True
@@ -82,6 +103,9 @@ class BoothApp:
                     elif event.type == pygame.KEYDOWN:
                         if event.key == self.quit_key:
                             running = False
+                        elif event.key == self.capture_key and self.state == START:
+                            self.state = LIVE
+                            self.state_entered_at = time.time()
                         elif event.key == self.capture_key and self.state == LIVE:
                             self._start_countdown()
 
@@ -99,7 +123,12 @@ class BoothApp:
     def _update(self):
         now = time.time()
 
-        if self.state == COUNTDOWN:
+        if self.state == LIVE:
+            if now - self.state_entered_at >= LIVE_IDLE_TIMEOUT_S:
+                self.state = START
+                self.state_entered_at = now
+
+        elif self.state == COUNTDOWN:
             elapsed = now - self.countdown_start
             remaining = self.config.countdown_seconds - elapsed
             if remaining <= 0:
@@ -126,7 +155,7 @@ class BoothApp:
 
         elif self.state == RESULT:
             if now - self.state_entered_at >= self.config.post_capture_display_seconds:
-                self.state = LIVE
+                self.state = START
                 self.state_entered_at = now
 
     def _capture_and_flash(self):
@@ -169,13 +198,29 @@ class BoothApp:
     def _draw(self):
         self.screen.fill(BLACK)
 
-        frame = self.captured_frame if self.state in (FLASH, REVIEW, UPLOADING, RESULT) else self.camera.read_frame_rgb()
+        if self.state == START:
+            frame = None
+        elif self.state in (FLASH, REVIEW, UPLOADING, RESULT):
+            frame = self.captured_frame
+        else:
+            frame = self.camera.read_frame_rgb()
+
         if frame is not None:
             surface = frame_to_surface(frame)
             scaled, offset = scale_to_fit(surface, self.screen_size)
             self.screen.blit(scaled, offset)
 
-        if self.state == LIVE:
+        if self.state == START:
+            message_y_ratio = 0.5
+            if self.start_logo_surface is not None:
+                logo_rect = self.start_logo_surface.get_rect(
+                    center=(self.screen_size[0] / 2, self.screen_size[1] * 0.42)
+                )
+                self.screen.blit(self.start_logo_surface, logo_rect)
+                message_y_ratio = 0.78
+            self._draw_wrapped_centered_text(self.config.start_message, self.font_med, WHITE, y_ratio=message_y_ratio)
+
+        elif self.state == LIVE:
             self._draw_wrapped_centered_text(self.config.prompt_message, self.font_med, WHITE, y_ratio=0.88)
 
         elif self.state == COUNTDOWN:
