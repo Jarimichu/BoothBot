@@ -31,6 +31,7 @@ DEFAULTS = {
     "prompt_message": "Press the button to take a photo!",
     "review_message_top": "Thanks for coming to the con!",
     "review_message_bottom": "Please see your photo on the Telegram channel",
+    "scale_review_photo": False,
     "discord_webhook_url": "",
     "telegram_bot_token": "",
     "telegram_chat_id": "",

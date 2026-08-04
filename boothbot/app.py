@@ -24,6 +24,7 @@ GREEN = (80, 220, 100)
 RED = (230, 70, 70)
 FLASH_DURATION_S = 0.15
 LIVE_IDLE_TIMEOUT_S = 30
+SCALED_REVIEW_PHOTO_RATIO = 0.75
 
 
 def frame_to_surface(frame_rgb):
@@ -207,8 +208,14 @@ class BoothApp:
 
         if frame is not None:
             surface = frame_to_surface(frame)
-            scaled, offset = scale_to_fit(surface, self.screen_size)
-            self.screen.blit(scaled, offset)
+            if self.config.scale_review_photo and self.state in (REVIEW, UPLOADING, RESULT):
+                box_w = int(self.screen_size[0] * SCALED_REVIEW_PHOTO_RATIO)
+                box_h = int(self.screen_size[1] * SCALED_REVIEW_PHOTO_RATIO)
+            else:
+                box_w, box_h = self.screen_size
+            scaled, offset = scale_to_fit(surface, (box_w, box_h))
+            box_origin = ((self.screen_size[0] - box_w) // 2, (self.screen_size[1] - box_h) // 2)
+            self.screen.blit(scaled, (box_origin[0] + offset[0], box_origin[1] + offset[1]))
 
         if self.state == START:
             message_y_ratio = 0.5

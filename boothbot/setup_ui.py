@@ -39,6 +39,7 @@ class SetupWindow:
         self.review_message_bottom_var = tk.StringVar(
             value=config_data.get("review_message_bottom", "Please see your photo on the Telegram channel")
         )
+        self.scale_review_photo_var = tk.BooleanVar(value=config_data.get("scale_review_photo", False))
         self.capture_key_var = tk.StringVar(value=config_data.get("capture_key", "space"))
         self.quit_key_var = tk.StringVar(value=config_data.get("quit_key", "escape"))
         self.discord_webhook_var = tk.StringVar(value=config_data.get("discord_webhook_url", ""))
@@ -100,6 +101,12 @@ class SetupWindow:
         row = self._add_spinbox(right, row, "Photo review (seconds):", self.photo_review_var, 1, 60)
         row = self._add_entry(right, row, "Review message (top):", self.review_message_top_var, width=36)
         row = self._add_entry(right, row, "Review message (bottom):", self.review_message_bottom_var, width=36)
+
+        ttk.Checkbutton(
+            right, text="Scale review photo to 75% (room for messages above/below)", variable=self.scale_review_photo_var
+        ).grid(row=row, column=0, columnspan=2, sticky="w", pady=(2, 4))
+        row += 1
+
         row = self._add_spinbox(right, row, "Result display (seconds):", self.post_capture_var, 1, 30)
         row = self._add_entry(right, row, "Live view message:", self.prompt_message_var, width=36)
         row = self._add_key_capture(right, row, "Capture button key:", self.capture_key_var)
@@ -224,6 +231,7 @@ class SetupWindow:
             "prompt_message": self.prompt_message_var.get().strip(),
             "review_message_top": self.review_message_top_var.get().strip(),
             "review_message_bottom": self.review_message_bottom_var.get().strip(),
+            "scale_review_photo": self.scale_review_photo_var.get(),
             "capture_key": self.capture_key_var.get(),
             "quit_key": self.quit_key_var.get(),
             "discord_webhook_url": self.discord_webhook_var.get().strip(),
