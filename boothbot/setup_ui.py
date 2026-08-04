@@ -4,6 +4,7 @@ import os
 import queue
 import threading
 import tkinter as tk
+from datetime import datetime
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
@@ -19,6 +20,7 @@ TEST_POLL_INTERVAL_MS = 200
 CAMERA_INDEX_CHOICES = [str(i) for i in range(6)]
 COUNTDOWN_CHOICES = [3, 4, 5, 6, 7, 8, 10]
 PHOTO_REVIEW_CHOICES = [3, 4, 5, 6, 8, 10, 15]
+TELEGRAM_RETRY_CHOICES = [0, 1, 2, 3, 5, 10]
 
 STATUS_COLOR_IDLE = "#555555"
 STATUS_COLOR_SUCCESS = "#1E8E3C"
@@ -34,6 +36,11 @@ CHART_SEGMENTS = [  # bottom-to-top stacking order, and legend order
     ("partial", "#E6A23C", "Partly delivered"),
     ("failed", "#E64646", "Failed"),
 ]
+CHART_ROW_COLORS = {"delivered": "#E9FBEC", "local": "#F0F0F0", "partial": "#FCF1DD", "failed": "#FCE9E9"}
+PENDING_ROW_COLOR = "#E6F1FC"
+
+LOG_DETAIL_LIMIT = 40  # newest resolved captures shown, on top of every still-pending one
+LOG_DETAIL_REFRESH_MS = 2000  # only re-scheduled while a capture is still pending, see _refresh_logs
 
 
 class SetupWindow:
@@ -42,6 +49,7 @@ class SetupWindow:
         self.result = None
         self.remember_settings = True
         self.camera = None
+        self._log_row_data = {}
 
         self._test_queue = queue.Queue()
         self._tests_in_flight = set()
@@ -84,6 +92,7 @@ class SetupWindow:
         self.telegram_upload_enabled_var = tk.BooleanVar(value=config_data.get("telegram_upload_enabled", False))
         self.telegram_token_var = tk.StringVar(value=config_data.get("telegram_bot_token", ""))
         self.telegram_chat_id_var = tk.StringVar(value=config_data.get("telegram_chat_id", ""))
+        self.telegram_max_retries_var = tk.IntVar(value=config_data.get("telegram_max_retries", 0))
 
         self._build_ui()
         self._open_camera(self.camera_index_var.get())
@@ -221,6 +230,15 @@ class SetupWindow:
         row += 1
         row = self._add_entry(storage_tab, row, "Telegram bot token:", self.telegram_token_var, width=36)
         row = self._add_entry(storage_tab, row, "Telegram chat ID:", self.telegram_chat_id_var, width=36)
+        row = self._add_combobox(storage_tab, row, "Telegram send retries:", self.telegram_max_retries_var, TELEGRAM_RETRY_CHOICES)
+        ttk.Label(
+            storage_tab,
+            text="Telegram sometimes reports a failure even after the photo was actually delivered -\n"
+                 "retrying can repost it. Default (0) sends once; raise this only if photos are\n"
+                 "genuinely going missing, not just showing as failed in the log.",
+            foreground="#555", font=("Segoe UI", 8), justify="left",
+        ).grid(row=row, column=0, columnspan=2, sticky="w", pady=(0, 4))
+        row += 1
         row = self._add_test_row(storage_tab, row, "telegram", "Send Test Message", self._on_test_telegram)
 
         logs_tab = self._add_tab(notebook, "Logs")
@@ -260,7 +278,48 @@ class SetupWindow:
             row=row, column=0, columnspan=2, sticky="w", pady=(0, 8)
         )
         row += 1
-        ttk.Button(logs_tab, text="Refresh", command=self._refresh_logs).grid(row=row, column=0, sticky="w")
+
+        ttk.Label(logs_tab, text="Every Photo", font=("Segoe UI", 11, "bold")).grid(
+            row=row, column=0, columnspan=2, sticky="w"
+        )
+        row += 1
+        ttk.Label(
+            logs_tab,
+            text="Still-retrying photos appear first (blue), followed by the most recent resolved ones.",
+        ).grid(row=row, column=0, columnspan=2, sticky="w", pady=(0, 4))
+        row += 1
+
+        detail_frame = ttk.Frame(logs_tab)
+        detail_frame.grid(row=row, column=0, columnspan=2, sticky="w", pady=(0, 8))
+        columns = ("captured", "photo", "local", "discord", "telegram", "state")
+        self.log_tree = ttk.Treeview(
+            detail_frame, columns=columns, show="headings", height=8, selectmode="browse",
+        )
+        headings = {
+            "captured": ("Captured", 78),
+            "photo": ("Photo", 140),
+            "local": ("Local", 44),
+            "discord": ("Discord", 150),
+            "telegram": ("Telegram", 150),
+            "state": ("State", 150),
+        }
+        for col, (heading, width) in headings.items():
+            self.log_tree.heading(col, text=heading)
+            self.log_tree.column(col, width=width, minwidth=width, stretch=False, anchor="w")
+        for tag, color in {**CHART_ROW_COLORS, "pending": PENDING_ROW_COLOR}.items():
+            self.log_tree.tag_configure(tag, background=color)
+        scrollbar = ttk.Scrollbar(detail_frame, orient="vertical", command=self.log_tree.yview)
+        self.log_tree.configure(yscrollcommand=scrollbar.set)
+        self.log_tree.pack(side="left")
+        scrollbar.pack(side="left", fill="y")
+        row += 1
+
+        log_action_row = ttk.Frame(logs_tab)
+        log_action_row.grid(row=row, column=0, columnspan=2, sticky="w")
+        ttk.Button(log_action_row, text="Refresh", command=self._refresh_logs).pack(side="left")
+        ttk.Button(log_action_row, text="Delete Selected Photo", command=self._on_delete_log_entry).pack(
+            side="left", padx=(8, 0)
+        )
 
         button_row = ttk.Frame(outer)
         button_row.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(16, 0))
@@ -426,11 +485,49 @@ class SetupWindow:
         capture_log.LOG_DIR.mkdir(parents=True, exist_ok=True)
         os.startfile(str(capture_log.LOG_DIR))
 
+    def _on_delete_log_entry(self):
+        selection = self.log_tree.selection()
+        if not selection:
+            messagebox.showinfo("Delete Photo", "Select a photo in the table first.")
+            return
+
+        data = self._log_row_data.get(selection[0])
+        if data is None:
+            return
+        if data["pending"]:
+            messagebox.showinfo("Delete Photo", "This photo is still being sent - wait for it to finish, then try again.")
+            return
+
+        photo_file = data["photo_file"]
+        if not photo_file:
+            messagebox.showinfo("Delete Photo", "This entry has no photo file to delete.")
+            return
+
+        if not messagebox.askyesno("Delete Photo", f"Permanently delete {photo_file} and remove it from the log?"):
+            return
+
+        photo_path = self._photos_dir_path() / photo_file
+        try:
+            photo_path.unlink(missing_ok=True)
+        except OSError as exc:
+            messagebox.showerror("Delete Photo", f"Could not delete the photo file:\n{exc}")
+            return
+
+        capture_log.delete_entry(photo_file)
+        self._refresh_logs()
+
     def _refresh_logs(self):
         entries = capture_log.read_entries()
         hourly, totals = capture_log.summarize(entries)
         self.log_summary_var.set(self._format_log_summary(totals))
         self._draw_log_chart(hourly)
+
+        pending = capture_log.list_pending()
+        self._draw_log_detail(entries, pending)
+        # Keeps "time still listening" and attempt counts moving without a manual click - but only
+        # while something is actually in flight, so an idle booth doesn't re-read the CSV forever.
+        if pending:
+            self.root.after(LOG_DETAIL_REFRESH_MS, self._refresh_logs)
 
     def _format_log_summary(self, totals):
         if totals["total"] == 0:
@@ -514,6 +611,72 @@ class SetupWindow:
             )
         canvas.create_text(x1, y1 + 16, text="Hour of day", anchor="e", font=("Segoe UI", 7), fill="#888888")
 
+    def _draw_log_detail(self, entries, pending):
+        tree = self.log_tree
+        tree.delete(*tree.get_children())
+        self._log_row_data = {}
+
+        for entry in pending:
+            iid = tree.insert("", "end", values=self._pending_row_values(entry), tags=("pending",))
+            self._log_row_data[iid] = {"photo_file": entry["photo_file"], "pending": True}
+
+        recent = sorted(entries, key=lambda entry: entry["timestamp"], reverse=True)[:LOG_DETAIL_LIMIT]
+        for entry in recent:
+            iid = tree.insert(
+                "", "end", values=self._resolved_row_values(entry), tags=(capture_log.classify_entry(entry),)
+            )
+            self._log_row_data[iid] = {"photo_file": entry["photo_file"], "pending": False}
+
+    def _resolved_row_values(self, entry):
+        return (
+            entry["timestamp"].strftime("%m/%d %H:%M:%S"),
+            entry["photo_file"] or "(no photo)",
+            "✓" if entry["saved_locally"] else "✗",
+            self._destination_cell(
+                entry["discord_enabled"], entry["discord_success"], entry["discord_attempts"], entry["discord_message"]
+            ),
+            self._destination_cell(
+                entry["telegram_enabled"], entry["telegram_success"], entry["telegram_attempts"], entry["telegram_message"]
+            ),
+            f"Resolved {entry['resolved_at'].strftime('%H:%M:%S')}",
+        )
+
+    def _pending_row_values(self, entry):
+        remaining = (entry["deadline_at"] - datetime.now()).total_seconds()
+        return (
+            entry["captured_at"].strftime("%m/%d %H:%M:%S"),
+            entry["photo_file"] or "(no photo)",
+            "✓" if entry["saved_locally"] else "✗",
+            self._destination_cell(
+                entry["discord_enabled"], entry["discord_success"], entry["discord_attempts"], entry["discord_message"]
+            ),
+            self._destination_cell(
+                entry["telegram_enabled"], entry["telegram_success"], entry["telegram_attempts"], entry["telegram_message"]
+            ),
+            f"Listening... {self._format_remaining(remaining)} left",
+        )
+
+    @staticmethod
+    def _destination_cell(enabled, success, attempts, message):
+        if not enabled:
+            return "-"
+        if attempts == 0:
+            return "queued"
+        if success:
+            return f"sent ({attempts} tries)" if attempts > 1 else "sent"
+        # Messages come back as "Discord: HTTP 502 ..." / "Telegram: could not read ..." - the
+        # column already says which destination this is, so drop the redundant label prefix.
+        detail = message.split(": ", 1)[-1] if message else ""
+        if len(detail) > 40:
+            detail = detail[:37] + "..."
+        return f"failed x{attempts}: {detail}" if detail else f"failed x{attempts}"
+
+    @staticmethod
+    def _format_remaining(seconds):
+        seconds = max(0, int(seconds))
+        minutes, secs = divmod(seconds, 60)
+        return f"{minutes}:{secs:02d}"
+
     def _update_preview(self):
         frame = self.camera.read_frame_rgb() if self.camera is not None else None
         if frame is not None:
@@ -558,6 +721,7 @@ class SetupWindow:
             "telegram_upload_enabled": self.telegram_upload_enabled_var.get(),
             "telegram_bot_token": self.telegram_token_var.get().strip(),
             "telegram_chat_id": self.telegram_chat_id_var.get().strip(),
+            "telegram_max_retries": self.telegram_max_retries_var.get(),
             "monitor_enabled": self.monitor_enabled_var.get(),
             "monitor_port": self.monitor_port_var.get(),
             "monitor_show_url": self.monitor_show_url_var.get(),
