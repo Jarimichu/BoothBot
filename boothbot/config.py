@@ -25,6 +25,7 @@ DEFAULTS = {
     "fullscreen": True,
     "photos_dir": "photos",
     "post_capture_display_seconds": 4,
+    "prompt_message": "Press the button to take a photo!",
     "discord_webhook_url": "",
     "telegram_bot_token": "",
     "telegram_chat_id": "",
