@@ -1,0 +1,4 @@
+opencv-python==4.10.0.84
+pygame==2.6.1
+requests==2.32.3
+Pillow==10.4.0
