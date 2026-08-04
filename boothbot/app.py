@@ -12,6 +12,7 @@ from .camera import Camera, CameraError
 LIVE = "live"
 COUNTDOWN = "countdown"
 FLASH = "flash"
+REVIEW = "review"
 UPLOADING = "uploading"
 RESULT = "result"
 
@@ -106,7 +107,12 @@ class BoothApp:
 
         elif self.state == FLASH:
             if now - self.state_entered_at >= FLASH_DURATION_S:
-                self._begin_upload()
+                self.state = REVIEW
+                self.state_entered_at = now
+
+        elif self.state == REVIEW:
+            if now - self.state_entered_at >= self.config.photo_review_seconds:
+                self._advance_after_review()
 
         elif self.state == UPLOADING:
             try:
@@ -129,11 +135,10 @@ class BoothApp:
             self.captured_frame = frame
         self.state = FLASH
         self.state_entered_at = time.time()
+        self._start_upload()
 
-    def _begin_upload(self):
-        self.state = UPLOADING
-        self.state_entered_at = time.time()
-
+    def _start_upload(self):
+        """Kicks off the upload in the background so it overlaps with the photo review, not after it."""
         if self.captured_frame is None:
             self.upload_queue.put([(False, "Capture failed - no frame from camera")])
             return
@@ -148,10 +153,23 @@ class BoothApp:
 
         threading.Thread(target=worker, daemon=True).start()
 
+    def _advance_after_review(self):
+        """Called once the photo review timer expires: skips straight to the result if the upload already
+        finished in the background, otherwise shows the uploading spinner until it does."""
+        try:
+            results = self.upload_queue.get_nowait()
+        except queue.Empty:
+            self.state = UPLOADING
+            self.state_entered_at = time.time()
+        else:
+            self.result_lines = [msg for _, msg in results]
+            self.state = RESULT
+            self.state_entered_at = time.time()
+
     def _draw(self):
         self.screen.fill(BLACK)
 
-        frame = self.captured_frame if self.state in (FLASH, UPLOADING, RESULT) else self.camera.read_frame_rgb()
+        frame = self.captured_frame if self.state in (FLASH, REVIEW, UPLOADING, RESULT) else self.camera.read_frame_rgb()
         if frame is not None:
             surface = frame_to_surface(frame)
             scaled, offset = scale_to_fit(surface, self.screen_size)
@@ -167,6 +185,12 @@ class BoothApp:
 
         elif self.state == FLASH:
             self.screen.fill(WHITE)
+
+        elif self.state == REVIEW:
+            self._draw_wrapped_centered_text(self.config.review_message_top, self.font_small, WHITE, y_ratio=0.08, shadow=True)
+            self._draw_wrapped_centered_text(
+                self.config.review_message_bottom, self.font_small, WHITE, y_ratio=0.92, shadow=True
+            )
 
         elif self.state == UPLOADING:
             self._draw_centered_text("Sending your photo...", self.font_med, WHITE, y_ratio=0.9, shadow=True)

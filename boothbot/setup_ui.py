@@ -25,9 +25,16 @@ class SetupWindow:
         self.camera_index_var = tk.IntVar(value=config_data.get("camera_index", 0))
         self.camera_status_var = tk.StringVar(value="")
         self.countdown_var = tk.IntVar(value=config_data.get("countdown_seconds", 5))
+        self.photo_review_var = tk.IntVar(value=config_data.get("photo_review_seconds", 5))
         self.post_capture_var = tk.IntVar(value=config_data.get("post_capture_display_seconds", 4))
         self.fullscreen_var = tk.BooleanVar(value=config_data.get("fullscreen", True))
         self.prompt_message_var = tk.StringVar(value=config_data.get("prompt_message", "Press the button to take a photo!"))
+        self.review_message_top_var = tk.StringVar(
+            value=config_data.get("review_message_top", "Thanks for coming to the con!")
+        )
+        self.review_message_bottom_var = tk.StringVar(
+            value=config_data.get("review_message_bottom", "Please see your photo on the Telegram channel")
+        )
         self.capture_key_var = tk.StringVar(value=config_data.get("capture_key", "space"))
         self.quit_key_var = tk.StringVar(value=config_data.get("quit_key", "escape"))
         self.discord_webhook_var = tk.StringVar(value=config_data.get("discord_webhook_url", ""))
@@ -75,6 +82,9 @@ class SetupWindow:
         row += 1
 
         row = self._add_spinbox(right, row, "Countdown (seconds):", self.countdown_var, 1, 30)
+        row = self._add_spinbox(right, row, "Photo review (seconds):", self.photo_review_var, 1, 60)
+        row = self._add_entry(right, row, "Review message (top):", self.review_message_top_var, width=36)
+        row = self._add_entry(right, row, "Review message (bottom):", self.review_message_bottom_var, width=36)
         row = self._add_spinbox(right, row, "Result display (seconds):", self.post_capture_var, 1, 30)
         row = self._add_entry(right, row, "Live view message:", self.prompt_message_var, width=36)
         row = self._add_key_capture(right, row, "Capture button key:", self.capture_key_var)
@@ -171,9 +181,12 @@ class SetupWindow:
             **self.initial_config,
             "camera_index": self.camera_index_var.get(),
             "countdown_seconds": self.countdown_var.get(),
+            "photo_review_seconds": self.photo_review_var.get(),
             "post_capture_display_seconds": self.post_capture_var.get(),
             "fullscreen": self.fullscreen_var.get(),
             "prompt_message": self.prompt_message_var.get().strip(),
+            "review_message_top": self.review_message_top_var.get().strip(),
+            "review_message_bottom": self.review_message_bottom_var.get().strip(),
             "capture_key": self.capture_key_var.get(),
             "quit_key": self.quit_key_var.get(),
             "discord_webhook_url": self.discord_webhook_var.get().strip(),
