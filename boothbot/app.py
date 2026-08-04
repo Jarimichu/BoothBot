@@ -9,6 +9,7 @@ import pygame
 
 from . import __version__, capture_log, uploader
 from .camera import Camera, CameraError
+from .monitor_server import MonitorServer
 
 START = "start"
 LIVE = "live"
@@ -22,9 +23,11 @@ WHITE = (255, 255, 255)
 BLACK = (0, 0, 0)
 GREEN = (80, 220, 100)
 RED = (230, 70, 70)
+MONITOR_URL_COLOR = (90, 90, 90)
 FLASH_DURATION_S = 0.15
 LIVE_IDLE_TIMEOUT_S = 30
 SCALED_REVIEW_PHOTO_RATIO = 0.75
+CAMERA_HEALTH_INTERVAL_S = 5
 
 
 def frame_to_surface(frame_rgb):
@@ -56,6 +59,7 @@ class BoothApp:
         self.font_big = pygame.font.SysFont("Arial", 220, bold=True)
         self.font_med = pygame.font.SysFont("Arial", 64, bold=True)
         self.font_small = pygame.font.SysFont("Arial", 36)
+        self.font_tiny = pygame.font.SysFont("Arial", 20)
 
         try:
             self.capture_key = pygame.key.key_code(config.capture_key)
@@ -81,6 +85,23 @@ class BoothApp:
         self.result_lines = []
         self.result_success = False
 
+        # Live status, read by the monitor server's handler thread via _status_snapshot().
+        # Each field is a single atomically-assigned attribute (never split across two reads)
+        # so the handler thread can never observe a torn/inconsistent pair.
+        self.session_started_at = datetime.now()
+        self.camera_ok = None
+        self.camera_checked_at = None
+        self.last_capture_at = None
+        self.last_success_at = None
+        self.last_error = None  # (datetime, str) | None - sticky, not cleared by a later success
+        self.captures_this_session = 0
+        self.failures_this_session = 0
+        self.consecutive_failures = 0
+        self._last_camera_health_check = 0.0
+
+        self.monitor = None
+        self.monitor_url = None
+
     def _load_start_logo(self):
         if not self.config.start_logo_path:
             return None
@@ -100,6 +121,10 @@ class BoothApp:
     def run(self):
         """Returns True if the user pressed the quit key (setup should reopen), False if the window
         was closed outright (e.g. Alt+F4), meaning the whole program should exit."""
+        if self.config.monitor_enabled:
+            self.monitor = MonitorServer(self._status_snapshot, port=self.config.monitor_port)
+            self.monitor_url = self.monitor.start()
+
         running = True
         return_to_setup = False
         try:
@@ -121,6 +146,8 @@ class BoothApp:
                 self._draw()
                 self.clock.tick(30)
         finally:
+            if self.monitor is not None:
+                self.monitor.stop()
             self.camera.release()
             pygame.quit()
         return return_to_setup
@@ -132,7 +159,12 @@ class BoothApp:
     def _update(self):
         now = time.time()
 
-        if self.state == LIVE:
+        if self.state == START:
+            if now - self._last_camera_health_check >= CAMERA_HEALTH_INTERVAL_S:
+                self._read_camera_frame()
+                self._last_camera_health_check = now
+
+        elif self.state == LIVE:
             if now - self.state_entered_at >= LIVE_IDLE_TIMEOUT_S:
                 self.state = START
                 self.state_entered_at = now
@@ -165,10 +197,18 @@ class BoothApp:
                 self.state = START
                 self.state_entered_at = now
 
-    def _capture_and_flash(self):
+    def _read_camera_frame(self):
+        """The only place the camera is read from - tracks live health for the monitor dashboard."""
         frame = self.camera.read_frame_rgb()
+        self.camera_ok = frame is not None
+        self.camera_checked_at = datetime.now()
+        return frame
+
+    def _capture_and_flash(self):
+        frame = self._read_camera_frame()
         if frame is not None:
             self.captured_frame = frame
+        self.last_capture_at = datetime.now()
         self.state = FLASH
         self.state_entered_at = time.time()
         self._start_upload()
@@ -219,8 +259,23 @@ class BoothApp:
         self.result_lines = [result.message for result in results]
         self.result_success = any(result.success for result in results)
         self._log_capture(results)
+        self._update_live_status(results)
         self.state = RESULT
         self.state_entered_at = time.time()
+
+    def _update_live_status(self, results):
+        self.captures_this_session += 1
+        all_ok = self.capture_saved_locally and all(result.success for result in results)
+        if all_ok:
+            self.last_success_at = datetime.now()
+            self.consecutive_failures = 0
+        else:
+            self.failures_this_session += 1
+            self.consecutive_failures += 1
+            failing = [result.message for result in results if not result.success]
+            if not self.capture_saved_locally:
+                failing.insert(0, "Local save failed")
+            self.last_error = (datetime.now(), "; ".join(failing) if failing else "Unknown error")
 
     def _log_capture(self, results):
         by_destination = {result.destination: result.success for result in results}
@@ -241,7 +296,7 @@ class BoothApp:
         elif self.state in (FLASH, REVIEW, UPLOADING, RESULT):
             frame = self.captured_frame
         else:
-            frame = self.camera.read_frame_rgb()
+            frame = self._read_camera_frame()
 
         if frame is not None:
             surface = frame_to_surface(frame)
@@ -263,6 +318,8 @@ class BoothApp:
                 self.screen.blit(self.start_logo_surface, logo_rect)
                 message_y_ratio = 0.78
             self._draw_wrapped_centered_text(self.config.start_message, self.font_med, WHITE, y_ratio=message_y_ratio)
+            if self.monitor_url and self.config.monitor_show_url:
+                self._draw_monitor_url()
 
         elif self.state == LIVE:
             self._draw_wrapped_centered_text(self.config.prompt_message, self.font_med, WHITE, y_ratio=0.88)
@@ -297,6 +354,35 @@ class BoothApp:
                 self._draw_centered_text(line, self.font_small, WHITE, y_ratio=0.93 + i * 0.03, shadow=True)
 
         pygame.display.flip()
+
+    def _draw_monitor_url(self):
+        surf = self.font_tiny.render(f"Monitor: {self.monitor_url}", True, MONITOR_URL_COLOR)
+        rect = surf.get_rect()
+        margin = 12
+        rect.bottomleft = (margin, self.screen_size[1] - margin)
+        self.screen.blit(surf, rect)
+
+    def _status_snapshot(self):
+        """Called from the monitor server's handler thread - must only read plain attributes,
+        never touch pygame or the camera."""
+        destinations = []
+        if self.config.discord_enabled:
+            destinations.append("Discord")
+        if self.config.telegram_enabled:
+            destinations.append("Telegram")
+        return {
+            "state": self.state,
+            "session_started_at": self.session_started_at,
+            "camera_ok": self.camera_ok,
+            "camera_checked_at": self.camera_checked_at,
+            "last_capture_at": self.last_capture_at,
+            "last_success_at": self.last_success_at,
+            "last_error": self.last_error,
+            "captures_this_session": self.captures_this_session,
+            "failures_this_session": self.failures_this_session,
+            "consecutive_failures": self.consecutive_failures,
+            "destinations": destinations,
+        }
 
     def _draw_centered_text(self, text, font, color, y_ratio, shadow=False):
         if shadow:

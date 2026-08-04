@@ -9,7 +9,7 @@ from tkinter import filedialog, messagebox, ttk
 
 from PIL import Image, ImageTk
 
-from . import __version__, capture_log, uploader
+from . import __version__, capture_log, monitor_server, uploader
 from .camera import Camera, CameraError
 from .config import ROOT_DIR
 
@@ -49,6 +49,7 @@ class SetupWindow:
         self._test_status_vars = {}
         self._test_status_labels = {}
         self._test_buttons = {}
+        self._lan_ip = monitor_server.get_lan_ip()
 
         self.root = tk.Tk()
         self.root.title(f"BoothBot Setup v{__version__}")
@@ -62,6 +63,10 @@ class SetupWindow:
         self.post_capture_var = tk.IntVar(value=config_data.get("post_capture_display_seconds", 4))
         self.fullscreen_var = tk.BooleanVar(value=config_data.get("fullscreen", True))
         self.remember_settings_var = tk.BooleanVar(value=True)
+        self.monitor_enabled_var = tk.BooleanVar(value=config_data.get("monitor_enabled", True))
+        self.monitor_port_var = tk.IntVar(value=config_data.get("monitor_port", monitor_server.DEFAULT_PORT))
+        self.monitor_show_url_var = tk.BooleanVar(value=config_data.get("monitor_show_url", False))
+        self.monitor_url_var = tk.StringVar(value=f"http://{self._lan_ip}:{self.monitor_port_var.get()}")
         self.start_message_var = tk.StringVar(
             value=config_data.get("start_message", "Press button to start photobooth!")
         )
@@ -132,6 +137,33 @@ class SetupWindow:
         ttk.Checkbutton(
             general_tab, text="Remember these settings for next time", variable=self.remember_settings_var
         ).grid(row=row, column=0, columnspan=2, sticky="w", pady=(2, 4))
+        row += 1
+
+        ttk.Separator(general_tab, orient="horizontal").grid(row=row, column=0, columnspan=2, sticky="ew", pady=8)
+        row += 1
+        ttk.Label(general_tab, text="Remote Monitor", font=("Segoe UI", 11, "bold")).grid(
+            row=row, column=0, columnspan=2, sticky="w"
+        )
+        row += 1
+        ttk.Checkbutton(
+            general_tab,
+            text="Enable remote monitor (view live status from a phone/laptop on the same network)",
+            variable=self.monitor_enabled_var,
+        ).grid(row=row, column=0, columnspan=2, sticky="w", pady=(2, 4))
+        row += 1
+        row = self._add_entry(general_tab, row, "Port:", self.monitor_port_var, width=8)
+        ttk.Checkbutton(
+            general_tab, text="Show the monitor URL on the start page", variable=self.monitor_show_url_var
+        ).grid(row=row, column=0, columnspan=2, sticky="w", pady=(2, 4))
+        row += 1
+        monitor_url_row = ttk.Frame(general_tab)
+        monitor_url_row.grid(row=row, column=0, columnspan=2, sticky="w", pady=(0, 2))
+        ttk.Label(monitor_url_row, textvariable=self.monitor_url_var, foreground="#555").pack(side="left")
+        ttk.Button(monitor_url_row, text="Copy", command=self._on_copy_monitor_url).pack(side="left", padx=(8, 0))
+        row += 1
+        ttk.Label(general_tab, text="(only reachable while the photobooth is running)", foreground="#888").grid(
+            row=row, column=0, columnspan=2, sticky="w"
+        )
         row += 1
 
         start_tab = self._add_tab(notebook, "Start Page")
@@ -241,8 +273,20 @@ class SetupWindow:
 
         for var in (self.discord_webhook_var, self.telegram_token_var, self.telegram_chat_id_var):
             var.trace_add("write", lambda *_args: self._sync_test_buttons())
+        self.monitor_port_var.trace_add("write", lambda *_args: self._update_monitor_url_preview())
         self._sync_test_buttons()
         self._refresh_logs()
+
+    def _update_monitor_url_preview(self):
+        try:
+            port = self.monitor_port_var.get()
+        except tk.TclError:
+            return
+        self.monitor_url_var.set(f"http://{self._lan_ip}:{port}")
+
+    def _on_copy_monitor_url(self):
+        self.root.clipboard_clear()
+        self.root.clipboard_append(self.monitor_url_var.get())
 
     def _add_test_row(self, parent, row, destination, label, command):
         test_row = ttk.Frame(parent)
@@ -518,6 +562,9 @@ class SetupWindow:
             "telegram_upload_enabled": self.telegram_upload_enabled_var.get(),
             "telegram_bot_token": self.telegram_token_var.get().strip(),
             "telegram_chat_id": self.telegram_chat_id_var.get().strip(),
+            "monitor_enabled": self.monitor_enabled_var.get(),
+            "monitor_port": self.monitor_port_var.get(),
+            "monitor_show_url": self.monitor_show_url_var.get(),
         }
         self.remember_settings = self.remember_settings_var.get()
         self._cleanup()
