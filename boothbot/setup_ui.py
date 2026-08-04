@@ -27,6 +27,7 @@ class SetupWindow:
         self.countdown_var = tk.IntVar(value=config_data.get("countdown_seconds", 5))
         self.post_capture_var = tk.IntVar(value=config_data.get("post_capture_display_seconds", 4))
         self.fullscreen_var = tk.BooleanVar(value=config_data.get("fullscreen", True))
+        self.prompt_message_var = tk.StringVar(value=config_data.get("prompt_message", "Press the button to take a photo!"))
         self.capture_key_var = tk.StringVar(value=config_data.get("capture_key", "space"))
         self.quit_key_var = tk.StringVar(value=config_data.get("quit_key", "escape"))
         self.discord_webhook_var = tk.StringVar(value=config_data.get("discord_webhook_url", ""))
@@ -75,6 +76,7 @@ class SetupWindow:
 
         row = self._add_spinbox(right, row, "Countdown (seconds):", self.countdown_var, 1, 30)
         row = self._add_spinbox(right, row, "Result display (seconds):", self.post_capture_var, 1, 30)
+        row = self._add_entry(right, row, "Live view message:", self.prompt_message_var, width=36)
         row = self._add_key_capture(right, row, "Capture button key:", self.capture_key_var)
         row = self._add_key_capture(right, row, "Quit key:", self.quit_key_var)
 
@@ -171,6 +173,7 @@ class SetupWindow:
             "countdown_seconds": self.countdown_var.get(),
             "post_capture_display_seconds": self.post_capture_var.get(),
             "fullscreen": self.fullscreen_var.get(),
+            "prompt_message": self.prompt_message_var.get().strip(),
             "capture_key": self.capture_key_var.get(),
             "quit_key": self.quit_key_var.get(),
             "discord_webhook_url": self.discord_webhook_var.get().strip(),

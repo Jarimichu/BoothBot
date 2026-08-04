@@ -158,7 +158,7 @@ class BoothApp:
             self.screen.blit(scaled, offset)
 
         if self.state == LIVE:
-            self._draw_centered_text("Press the button to take a photo!", self.font_med, WHITE, y_ratio=0.9)
+            self._draw_wrapped_centered_text(self.config.prompt_message, self.font_med, WHITE, y_ratio=0.88)
 
         elif self.state == COUNTDOWN:
             remaining = self.config.countdown_seconds - (time.time() - self.countdown_start)
@@ -189,6 +189,29 @@ class BoothApp:
         text_surf = font.render(text, True, color)
         text_rect = text_surf.get_rect(center=(self.screen_size[0] / 2, self.screen_size[1] * y_ratio))
         self.screen.blit(text_surf, text_rect)
+
+    def _draw_wrapped_centered_text(self, text, font, color, y_ratio, shadow=False, max_width_ratio=0.85):
+        max_width = self.screen_size[0] * max_width_ratio
+        words = text.split()
+        lines = [words[0]] if words else [""]
+        for word in words[1:]:
+            candidate = f"{lines[-1]} {word}"
+            if font.size(candidate)[0] <= max_width:
+                lines[-1] = candidate
+            else:
+                lines.append(word)
+
+        line_height = font.get_linesize()
+        top = self.screen_size[1] * y_ratio - (line_height * len(lines)) / 2
+        for i, line in enumerate(lines):
+            center_y = top + line_height * i + line_height / 2
+            if shadow:
+                shadow_surf = font.render(line, True, BLACK)
+                shadow_rect = shadow_surf.get_rect(center=(self.screen_size[0] / 2 + 3, center_y + 3))
+                self.screen.blit(shadow_surf, shadow_rect)
+            text_surf = font.render(line, True, color)
+            text_rect = text_surf.get_rect(center=(self.screen_size[0] / 2, center_y))
+            self.screen.blit(text_surf, text_rect)
 
 
 def main():
