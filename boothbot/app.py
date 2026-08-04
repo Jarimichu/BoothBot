@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pygame
 
-from . import __version__, uploader
+from . import __version__, capture_log, uploader
 from .camera import Camera, CameraError
 
 START = "start"
@@ -76,6 +76,8 @@ class BoothApp:
         self.state_entered_at = time.time()
         self.countdown_start = None
         self.captured_frame = None
+        self.capture_photo_path = None
+        self.capture_saved_locally = False
         self.result_lines = []
         self.result_success = False
 
@@ -156,10 +158,7 @@ class BoothApp:
             except queue.Empty:
                 pass
             else:
-                self.result_lines = [msg for _, msg in results]
-                self.result_success = any(success for success, _ in results)
-                self.state = RESULT
-                self.state_entered_at = now
+                self._finish_upload(results)
 
         elif self.state == RESULT:
             if now - self.state_entered_at >= self.config.post_capture_display_seconds:
@@ -178,15 +177,24 @@ class BoothApp:
         """Kicks off the upload in the background so it overlaps with the photo review, not after it.
         The photo is always saved locally first, regardless of which (if any) online destinations are enabled."""
         if self.captured_frame is None:
-            self.upload_queue.put([(False, "Capture failed - no frame from camera")])
+            self.capture_photo_path = None
+            self.capture_saved_locally = False
+            self.upload_queue.put([uploader.UploadResult("local", False, "Capture failed - no frame from camera")])
             return
 
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         photo_path = self.config.photos_dir / f"booth_{timestamp}.jpg"
-        self.camera.save_frame(self.captured_frame, photo_path)
+        try:
+            saved_ok = self.camera.save_frame(self.captured_frame, photo_path)
+        except Exception as exc:
+            print(f"Could not save photo locally: {exc}")
+            saved_ok = False
+        self.capture_photo_path = photo_path
+        self.capture_saved_locally = saved_ok
 
         if not (self.config.discord_enabled or self.config.telegram_enabled):
-            self.upload_queue.put([(True, "Saved locally")])
+            message = "Saved locally" if saved_ok else "Could not save photo locally"
+            self.upload_queue.put([uploader.UploadResult("local", saved_ok, message)])
             return
 
         def worker():
@@ -204,10 +212,26 @@ class BoothApp:
             self.state = UPLOADING
             self.state_entered_at = time.time()
         else:
-            self.result_lines = [msg for _, msg in results]
-            self.result_success = any(success for success, _ in results)
-            self.state = RESULT
-            self.state_entered_at = time.time()
+            self._finish_upload(results)
+
+    def _finish_upload(self, results):
+        """Every finished capture funnels through here - the one place the capture log is written."""
+        self.result_lines = [result.message for result in results]
+        self.result_success = any(result.success for result in results)
+        self._log_capture(results)
+        self.state = RESULT
+        self.state_entered_at = time.time()
+
+    def _log_capture(self, results):
+        by_destination = {result.destination: result.success for result in results}
+        capture_log.append_capture(
+            photo_file=self.capture_photo_path.name if self.capture_photo_path else "",
+            saved_locally=self.capture_saved_locally,
+            discord_enabled=self.config.discord_enabled,
+            discord_success=by_destination.get("discord", False),
+            telegram_enabled=self.config.telegram_enabled,
+            telegram_success=by_destination.get("telegram", False),
+        )
 
     def _draw(self):
         self.screen.fill(BLACK)
