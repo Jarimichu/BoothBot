@@ -2,6 +2,16 @@
 
 All notable changes to BoothBot are documented in this file.
 
+## [1.6.0] - 2026-08-04
+
+### Added
+- Logs tab now has an "Every Photo" table listing every capture individually - captured time, filename, local-save status, and per-destination status (sent/failed with attempt count and reason). Still-retrying photos appear first, highlighted, with a live "time still listening" countdown, ahead of the most recent resolved ones.
+- "Delete Selected Photo" button in that table - removes the photo from `photos/` and its row from the log, with a confirmation prompt first. Only available for resolved photos (a still-retrying one must finish first, since its file may still be read by the background retry).
+- "Telegram send retries" setting in the Photo Storage tab (default **0**). Telegram occasionally reports a failure even after the photo was actually delivered (a lost response, not a lost photo); the previous unconditional retry behavior would then repost it, causing duplicates in the channel. Telegram now sends once by default and only retries if this is raised - Discord's retry behavior (unaffected by this setting) is unchanged.
+
+### Fixed
+- A capture log file written before verbose logging was introduced (v1.5.1) had a stale, narrower header; new rows kept getting appended under it, which silently misaligned every column when the log was read back. The log now migrates its header automatically the first time it's written to after upgrading.
+
 ## [1.5.1] - 2026-08-04
 
 ### Changed
