@@ -49,7 +49,9 @@ class SetupWindow:
         self.result = None
         self.remember_settings = True
         self.camera = None
-        self._log_row_data = {}
+        self.log_trees = {}
+        self.log_row_data = {}
+        self.log_destination_summary_vars = {}
 
         self._test_queue = queue.Queue()
         self._tests_in_flight = set()
@@ -248,78 +250,22 @@ class SetupWindow:
         )
         row += 1
         log_row = ttk.Frame(logs_tab)
-        log_row.grid(row=row, column=0, columnspan=2, sticky="w", pady=(0, 4))
+        log_row.grid(row=row, column=0, columnspan=2, sticky="w", pady=(0, 8))
         ttk.Label(log_row, text=str(capture_log.LOG_PATH), foreground="#555").pack(side="left")
         ttk.Button(log_row, text="Open Folder", command=self._on_open_log_folder).pack(side="left", padx=(8, 0))
         row += 1
-        ttk.Label(logs_tab, text="Photos taken by hour of day (all recorded history).").grid(
-            row=row, column=0, columnspan=2, sticky="w", pady=(0, 4)
-        )
-        row += 1
 
-        self.log_canvas = tk.Canvas(
-            logs_tab, width=CHART_WIDTH, height=CHART_HEIGHT, bg="white",
-            highlightthickness=1, highlightbackground="#CCCCCC",
-        )
-        self.log_canvas.grid(row=row, column=0, columnspan=2, sticky="w", pady=(0, 4))
-        row += 1
+        logs_notebook = ttk.Notebook(logs_tab)
+        logs_notebook.grid(row=row, column=0, columnspan=2, sticky="w")
 
-        legend_row = ttk.Frame(logs_tab)
-        legend_row.grid(row=row, column=0, columnspan=2, sticky="w", pady=(0, 8))
-        for _key, color, label in CHART_SEGMENTS:
-            swatch = tk.Canvas(legend_row, width=12, height=12, highlightthickness=0)
-            swatch.create_rectangle(0, 0, 12, 12, fill=color, outline="")
-            swatch.pack(side="left", padx=(0, 4))
-            ttk.Label(legend_row, text=label, font=("Segoe UI", 8)).pack(side="left", padx=(0, 12))
-        row += 1
+        overview_log_tab = self._add_tab(logs_notebook, "Overview")
+        self._build_overview_log_view(overview_log_tab)
 
-        self.log_summary_var = tk.StringVar(value="")
-        ttk.Label(logs_tab, textvariable=self.log_summary_var, justify="left").grid(
-            row=row, column=0, columnspan=2, sticky="w", pady=(0, 8)
-        )
-        row += 1
+        discord_log_tab = self._add_tab(logs_notebook, "Discord")
+        self._build_destination_log_view(discord_log_tab, "discord")
 
-        ttk.Label(logs_tab, text="Every Photo", font=("Segoe UI", 11, "bold")).grid(
-            row=row, column=0, columnspan=2, sticky="w"
-        )
-        row += 1
-        ttk.Label(
-            logs_tab,
-            text="Still-retrying photos appear first (blue), followed by the most recent resolved ones.",
-        ).grid(row=row, column=0, columnspan=2, sticky="w", pady=(0, 4))
-        row += 1
-
-        detail_frame = ttk.Frame(logs_tab)
-        detail_frame.grid(row=row, column=0, columnspan=2, sticky="w", pady=(0, 8))
-        columns = ("captured", "photo", "local", "discord", "telegram", "state")
-        self.log_tree = ttk.Treeview(
-            detail_frame, columns=columns, show="headings", height=8, selectmode="browse",
-        )
-        headings = {
-            "captured": ("Captured", 78),
-            "photo": ("Photo", 140),
-            "local": ("Local", 44),
-            "discord": ("Discord", 150),
-            "telegram": ("Telegram", 150),
-            "state": ("State", 150),
-        }
-        for col, (heading, width) in headings.items():
-            self.log_tree.heading(col, text=heading)
-            self.log_tree.column(col, width=width, minwidth=width, stretch=False, anchor="w")
-        for tag, color in {**CHART_ROW_COLORS, "pending": PENDING_ROW_COLOR}.items():
-            self.log_tree.tag_configure(tag, background=color)
-        scrollbar = ttk.Scrollbar(detail_frame, orient="vertical", command=self.log_tree.yview)
-        self.log_tree.configure(yscrollcommand=scrollbar.set)
-        self.log_tree.pack(side="left")
-        scrollbar.pack(side="left", fill="y")
-        row += 1
-
-        log_action_row = ttk.Frame(logs_tab)
-        log_action_row.grid(row=row, column=0, columnspan=2, sticky="w")
-        ttk.Button(log_action_row, text="Refresh", command=self._refresh_logs).pack(side="left")
-        ttk.Button(log_action_row, text="Delete Selected Photo", command=self._on_delete_log_entry).pack(
-            side="left", padx=(8, 0)
-        )
+        telegram_log_tab = self._add_tab(logs_notebook, "Telegram")
+        self._build_destination_log_view(telegram_log_tab, "telegram")
 
         button_row = ttk.Frame(outer)
         button_row.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(16, 0))
@@ -485,13 +431,129 @@ class SetupWindow:
         capture_log.LOG_DIR.mkdir(parents=True, exist_ok=True)
         os.startfile(str(capture_log.LOG_DIR))
 
-    def _on_delete_log_entry(self):
-        selection = self.log_tree.selection()
+    def _build_overview_log_view(self, parent):
+        row = 0
+        ttk.Label(parent, text="Photos taken by hour of day (all recorded history).").grid(
+            row=row, column=0, columnspan=2, sticky="w", pady=(0, 4)
+        )
+        row += 1
+
+        self.log_canvas = tk.Canvas(
+            parent, width=CHART_WIDTH, height=CHART_HEIGHT, bg="white",
+            highlightthickness=1, highlightbackground="#CCCCCC",
+        )
+        self.log_canvas.grid(row=row, column=0, columnspan=2, sticky="w", pady=(0, 4))
+        row += 1
+
+        legend_row = ttk.Frame(parent)
+        legend_row.grid(row=row, column=0, columnspan=2, sticky="w", pady=(0, 8))
+        for _key, color, label in CHART_SEGMENTS:
+            swatch = tk.Canvas(legend_row, width=12, height=12, highlightthickness=0)
+            swatch.create_rectangle(0, 0, 12, 12, fill=color, outline="")
+            swatch.pack(side="left", padx=(0, 4))
+            ttk.Label(legend_row, text=label, font=("Segoe UI", 8)).pack(side="left", padx=(0, 12))
+        row += 1
+
+        self.log_summary_var = tk.StringVar(value="")
+        ttk.Label(parent, textvariable=self.log_summary_var, justify="left").grid(
+            row=row, column=0, columnspan=2, sticky="w", pady=(0, 8)
+        )
+        row += 1
+
+        ttk.Label(parent, text="Every Photo", font=("Segoe UI", 11, "bold")).grid(
+            row=row, column=0, columnspan=2, sticky="w"
+        )
+        row += 1
+        ttk.Label(
+            parent,
+            text="Every photo taken, for browsing and deleting - see the Discord/Telegram tabs for delivery detail.",
+        ).grid(row=row, column=0, columnspan=2, sticky="w", pady=(0, 4))
+        row += 1
+
+        detail_frame = ttk.Frame(parent)
+        detail_frame.grid(row=row, column=0, columnspan=2, sticky="w", pady=(0, 8))
+        columns = ("captured", "photo", "local", "state")
+        tree = ttk.Treeview(detail_frame, columns=columns, show="headings", height=8, selectmode="browse")
+        headings = {
+            "captured": ("Captured", 78),
+            "photo": ("Photo", 140),
+            "local": ("Local", 44),
+            "state": ("State", 150),
+        }
+        for col, (heading, width) in headings.items():
+            tree.heading(col, text=heading)
+            tree.column(col, width=width, minwidth=width, stretch=False, anchor="w")
+        for tag, color in {**CHART_ROW_COLORS, "pending": PENDING_ROW_COLOR}.items():
+            tree.tag_configure(tag, background=color)
+        scrollbar = ttk.Scrollbar(detail_frame, orient="vertical", command=tree.yview)
+        tree.configure(yscrollcommand=scrollbar.set)
+        tree.pack(side="left")
+        scrollbar.pack(side="left", fill="y")
+        self.log_trees["overview"] = tree
+        row += 1
+
+        action_row = ttk.Frame(parent)
+        action_row.grid(row=row, column=0, columnspan=2, sticky="w")
+        ttk.Button(action_row, text="Refresh", command=self._refresh_logs).pack(side="left")
+        ttk.Button(
+            action_row, text="Delete Selected Photo", command=lambda: self._on_delete_log_entry("overview")
+        ).pack(side="left", padx=(8, 0))
+
+    def _build_destination_log_view(self, parent, destination):
+        label = destination.capitalize()
+        row = 0
+        ttk.Label(
+            parent, text=f"Every photo where {label} was enabled, for tracking delivery to that destination.",
+        ).grid(row=row, column=0, columnspan=2, sticky="w", pady=(0, 4))
+        row += 1
+
+        summary_var = tk.StringVar(value="")
+        self.log_destination_summary_vars[destination] = summary_var
+        ttk.Label(parent, textvariable=summary_var, justify="left").grid(
+            row=row, column=0, columnspan=2, sticky="w", pady=(0, 8)
+        )
+        row += 1
+
+        detail_frame = ttk.Frame(parent)
+        detail_frame.grid(row=row, column=0, columnspan=2, sticky="w", pady=(0, 8))
+        columns = ("captured", "photo", "local", "status", "state")
+        tree = ttk.Treeview(detail_frame, columns=columns, show="headings", height=10, selectmode="browse")
+        headings = {
+            "captured": ("Captured", 78),
+            "photo": ("Photo", 140),
+            "local": ("Local", 44),
+            "status": (label, 220),
+            "state": ("State", 150),
+        }
+        for col, (heading, width) in headings.items():
+            tree.heading(col, text=heading)
+            tree.column(col, width=width, minwidth=width, stretch=False, anchor="w")
+        for tag, color in {
+            "delivered": CHART_ROW_COLORS["delivered"], "failed": CHART_ROW_COLORS["failed"], "pending": PENDING_ROW_COLOR,
+        }.items():
+            tree.tag_configure(tag, background=color)
+        scrollbar = ttk.Scrollbar(detail_frame, orient="vertical", command=tree.yview)
+        tree.configure(yscrollcommand=scrollbar.set)
+        tree.pack(side="left")
+        scrollbar.pack(side="left", fill="y")
+        self.log_trees[destination] = tree
+        row += 1
+
+        action_row = ttk.Frame(parent)
+        action_row.grid(row=row, column=0, columnspan=2, sticky="w")
+        ttk.Button(action_row, text="Refresh", command=self._refresh_logs).pack(side="left")
+        ttk.Button(
+            action_row, text="Delete Selected Photo", command=lambda d=destination: self._on_delete_log_entry(d)
+        ).pack(side="left", padx=(8, 0))
+
+    def _on_delete_log_entry(self, mode):
+        tree = self.log_trees[mode]
+        selection = tree.selection()
         if not selection:
             messagebox.showinfo("Delete Photo", "Select a photo in the table first.")
             return
 
-        data = self._log_row_data.get(selection[0])
+        data = self.log_row_data.get(mode, {}).get(selection[0])
         if data is None:
             return
         if data["pending"]:
@@ -518,12 +580,19 @@ class SetupWindow:
 
     def _refresh_logs(self):
         entries = capture_log.read_entries()
+        pending = capture_log.list_pending()
+
         hourly, totals = capture_log.summarize(entries)
         self.log_summary_var.set(self._format_log_summary(totals))
         self._draw_log_chart(hourly)
+        self._draw_log_detail("overview", entries, pending)
 
-        pending = capture_log.list_pending()
-        self._draw_log_detail(entries, pending)
+        for destination in ("discord", "telegram"):
+            self.log_destination_summary_vars[destination].set(
+                self._format_destination_summary(entries, destination)
+            )
+            self._draw_log_detail(destination, entries, pending)
+
         # Keeps "time still listening" and attempt counts moving without a manual click - but only
         # while something is actually in flight, so an idle booth doesn't re-read the CSV forever.
         if pending:
@@ -551,6 +620,29 @@ class SetupWindow:
         if destination_bits:
             lines.append("   ·   ".join(destination_bits))
         return "\n".join(lines)
+
+    @staticmethod
+    def _format_destination_summary(entries, destination):
+        label = destination.capitalize()
+        enabled_key = f"{destination}_enabled"
+        success_key = f"{destination}_success"
+        attempts_key = f"{destination}_attempts"
+
+        relevant = [entry for entry in entries if entry[enabled_key]]
+        if not relevant:
+            return f"No photos logged with {label} enabled yet."
+
+        sent = sum(1 for entry in relevant if entry[success_key])
+        failed = len(relevant) - sent
+        attempts = sum(entry[attempts_key] for entry in relevant)
+
+        date_format = "%Y-%m-%d %H:%M"
+        first = min(entry["timestamp"] for entry in relevant).strftime(date_format)
+        last = max(entry["timestamp"] for entry in relevant).strftime(date_format)
+        return (
+            f"{len(relevant)} photos  ·  {first} to {last}\n"
+            f"{label}: {sent} sent, {failed} failed  ·  {attempts} total attempts"
+        )
 
     def _draw_log_chart(self, hourly):
         canvas = self.log_canvas
@@ -611,33 +703,42 @@ class SetupWindow:
             )
         canvas.create_text(x1, y1 + 16, text="Hour of day", anchor="e", font=("Segoe UI", 7), fill="#888888")
 
-    def _draw_log_detail(self, entries, pending):
-        tree = self.log_tree
+    def _draw_log_detail(self, mode, entries, pending):
+        tree = self.log_trees[mode]
         tree.delete(*tree.get_children())
-        self._log_row_data = {}
+        row_data = {}
 
-        for entry in pending:
-            iid = tree.insert("", "end", values=self._pending_row_values(entry), tags=("pending",))
-            self._log_row_data[iid] = {"photo_file": entry["photo_file"], "pending": True}
+        if mode == "overview":
+            relevant_entries = entries
+            relevant_pending = pending
+            pending_row_fn = self._pending_row_values
+            resolved_row_fn = self._resolved_row_values
+            tag_fn = capture_log.classify_entry
+        else:
+            enabled_key = f"{mode}_enabled"
+            success_key = f"{mode}_success"
+            relevant_entries = [entry for entry in entries if entry[enabled_key]]
+            relevant_pending = [entry for entry in pending if entry[enabled_key]]
+            pending_row_fn = lambda entry: self._pending_row_values_for(entry, mode)
+            resolved_row_fn = lambda entry: self._resolved_row_values_for(entry, mode)
+            tag_fn = lambda entry: "delivered" if entry[success_key] else "failed"
 
-        recent = sorted(entries, key=lambda entry: entry["timestamp"], reverse=True)[:LOG_DETAIL_LIMIT]
+        for entry in relevant_pending:
+            iid = tree.insert("", "end", values=pending_row_fn(entry), tags=("pending",))
+            row_data[iid] = {"photo_file": entry["photo_file"], "pending": True}
+
+        recent = sorted(relevant_entries, key=lambda entry: entry["timestamp"], reverse=True)[:LOG_DETAIL_LIMIT]
         for entry in recent:
-            iid = tree.insert(
-                "", "end", values=self._resolved_row_values(entry), tags=(capture_log.classify_entry(entry),)
-            )
-            self._log_row_data[iid] = {"photo_file": entry["photo_file"], "pending": False}
+            iid = tree.insert("", "end", values=resolved_row_fn(entry), tags=(tag_fn(entry),))
+            row_data[iid] = {"photo_file": entry["photo_file"], "pending": False}
+
+        self.log_row_data[mode] = row_data
 
     def _resolved_row_values(self, entry):
         return (
             entry["timestamp"].strftime("%m/%d %H:%M:%S"),
             entry["photo_file"] or "(no photo)",
             "✓" if entry["saved_locally"] else "✗",
-            self._destination_cell(
-                entry["discord_enabled"], entry["discord_success"], entry["discord_attempts"], entry["discord_message"]
-            ),
-            self._destination_cell(
-                entry["telegram_enabled"], entry["telegram_success"], entry["telegram_attempts"], entry["telegram_message"]
-            ),
             f"Resolved {entry['resolved_at'].strftime('%H:%M:%S')}",
         )
 
@@ -647,11 +748,28 @@ class SetupWindow:
             entry["captured_at"].strftime("%m/%d %H:%M:%S"),
             entry["photo_file"] or "(no photo)",
             "✓" if entry["saved_locally"] else "✗",
+            f"Listening... {self._format_remaining(remaining)} left",
+        )
+
+    def _resolved_row_values_for(self, entry, destination):
+        return (
+            entry["timestamp"].strftime("%m/%d %H:%M:%S"),
+            entry["photo_file"] or "(no photo)",
+            "✓" if entry["saved_locally"] else "✗",
             self._destination_cell(
-                entry["discord_enabled"], entry["discord_success"], entry["discord_attempts"], entry["discord_message"]
+                True, entry[f"{destination}_success"], entry[f"{destination}_attempts"], entry[f"{destination}_message"]
             ),
+            f"Resolved {entry['resolved_at'].strftime('%H:%M:%S')}",
+        )
+
+    def _pending_row_values_for(self, entry, destination):
+        remaining = (entry["deadline_at"] - datetime.now()).total_seconds()
+        return (
+            entry["captured_at"].strftime("%m/%d %H:%M:%S"),
+            entry["photo_file"] or "(no photo)",
+            "✓" if entry["saved_locally"] else "✗",
             self._destination_cell(
-                entry["telegram_enabled"], entry["telegram_success"], entry["telegram_attempts"], entry["telegram_message"]
+                True, entry[f"{destination}_success"], entry[f"{destination}_attempts"], entry[f"{destination}_message"]
             ),
             f"Listening... {self._format_remaining(remaining)} left",
         )

@@ -2,6 +2,15 @@
 
 All notable changes to BoothBot are documented in this file.
 
+## [1.7.0] - 2026-08-04
+
+### Added
+- The Logs tab is now split into Overview / Discord / Telegram sub-tabs, for tracking each destination's delivery separately instead of only as a combined view. Overview keeps the hourly chart (both destinations) and a simplified "Every Photo" table (captured time / filename / local-save status / state) for browsing and deleting any photo. Discord and Telegram each get their own table - only photos where that destination was enabled, with that destination's own status, attempt count, and failure reason - plus a short "N sent, N failed" summary. "Delete Selected Photo" works independently in every sub-tab.
+- The remote monitor dashboard now shows a "N photos still sending" panel whenever a capture is mid-retry, with the soonest one's remaining time before it gives up - previously a photo stuck retrying for up to 15 minutes looked identical to one that had already resolved. Also included in `/status.json` for external tooling.
+
+### Changed
+- Per-destination rows in the new Discord/Telegram sub-tabs are colored by that destination's own outcome, not the combined Overview classification - a photo that failed on Telegram no longer shows ambiguously in the Discord tab just because Telegram also failed.
+
 ## [1.6.0] - 2026-08-04
 
 ### Added

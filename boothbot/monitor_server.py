@@ -83,15 +83,21 @@ class _MonitorRequestHandler(BaseHTTPRequestHandler):
         status = self.server.status_provider()
         entries = capture_log.read_entries()
         hourly, totals = capture_log.summarize(entries)
+        pending = capture_log.list_pending()
         refresh_seconds = 0 if query.get("refresh", [None])[0] == "0" else REFRESH_SECONDS
-        body = monitor_page.render_dashboard(status, hourly, totals, refresh_seconds=refresh_seconds)
+        body = monitor_page.render_dashboard(status, hourly, totals, pending, refresh_seconds=refresh_seconds)
         self._send_text(200, "text/html; charset=utf-8", body)
 
     def _handle_status_json(self):
         status = self.server.status_provider()
         entries = capture_log.read_entries()
         _hourly, totals = capture_log.summarize(entries)
-        payload = {"status": _json_safe(status), "totals": _json_safe(totals)}
+        pending = capture_log.list_pending()
+        payload = {
+            "status": _json_safe(status),
+            "totals": _json_safe(totals),
+            "pending": [_json_safe(entry) for entry in pending],
+        }
         self._send_text(200, "application/json", json.dumps(payload))
 
     def _send_text(self, code, content_type, body):
