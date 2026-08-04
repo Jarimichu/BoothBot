@@ -22,6 +22,7 @@ h3 { margin: 0 0 6px; font-size: 0.95em; opacity: 0.85; }
 .tile .value { font-size: 1.1em; font-weight: 600; }
 .error-box { background: rgba(198,40,40,0.15); border: 1px solid #C62828; border-radius: 6px; padding: 8px 10px; }
 .error-box pre { white-space: pre-wrap; word-break: break-word; margin: 4px 0 0; font-size: 0.85em; }
+.pending-box { background: rgba(66,133,244,0.15); border: 1px solid #4285F4; border-radius: 6px; padding: 8px 10px; }
 .chart { display: flex; align-items: flex-end; gap: 2px; height: 140px;
          border-bottom: 1px solid rgba(128,128,128,0.4); }
 .chart .col { flex: 1; display: flex; flex-direction: column-reverse; height: 100%; min-width: 4px; }
@@ -66,6 +67,29 @@ def render_status_panel(status: dict) -> str:
         for label, value in tiles
     )
     return f'<section class="tiles">{cells}</section>'
+
+
+def _format_remaining(seconds) -> str:
+    seconds = max(0, int(seconds))
+    minutes, secs = divmod(seconds, 60)
+    return f"{minutes}:{secs:02d}"
+
+
+def render_pending_panel(pending: list) -> str:
+    """Captures still being retried in the background (not yet resolved, so not yet in
+    captures.csv) - without this, a photo stuck mid-retry for up to 15 minutes looks identical
+    to one that resolved cleanly, from this page's point of view."""
+    if not pending:
+        return ""
+    soonest = min(pending, key=lambda entry: entry["deadline_at"])
+    remaining = (soonest["deadline_at"] - datetime.now()).total_seconds()
+    count_text = "1 photo" if len(pending) == 1 else f"{len(pending)} photos"
+    return (
+        '<section class="pending-box">'
+        f"<strong>{count_text} still sending</strong>"
+        f"<div>Oldest has {_format_remaining(remaining)} left in its retry window before giving up.</div>"
+        "</section>"
+    )
 
 
 def render_error_panel(status: dict) -> str:
@@ -125,7 +149,7 @@ def render_totals_table(totals: dict) -> str:
     )
 
 
-def render_dashboard(status: dict, hourly: list, totals: dict, refresh_seconds: int = 10) -> str:
+def render_dashboard(status: dict, hourly: list, totals: dict, pending: list, refresh_seconds: int = 10) -> str:
     refresh_tag = f'<meta http-equiv="refresh" content="{refresh_seconds}">' if refresh_seconds else ""
 
     if status["consecutive_failures"] >= 3:
@@ -156,6 +180,7 @@ def render_dashboard(status: dict, hourly: list, totals: dict, refresh_seconds: 
   <span class="banner {banner_class}">{banner_text}</span>
 </header>
 {render_status_panel(status)}
+{render_pending_panel(pending)}
 {render_error_panel(status)}
 {render_bar_chart(hourly)}
 {render_totals_table(totals)}
