@@ -1,11 +1,14 @@
 """A Tkinter setup screen (with a live webcam preview) shown before the fullscreen booth view."""
+import os
 import tkinter as tk
+from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
 from PIL import Image, ImageTk
 
 from . import __version__
 from .camera import Camera, CameraError
+from .config import ROOT_DIR
 
 PREVIEW_SIZE = (480, 360)
 PREVIEW_INTERVAL_MS = 33
@@ -48,7 +51,9 @@ class SetupWindow:
         self.scale_review_photo_var = tk.BooleanVar(value=config_data.get("scale_review_photo", True))
         self.capture_key_var = tk.StringVar(value=config_data.get("capture_key", "space"))
         self.quit_key_var = tk.StringVar(value=config_data.get("quit_key", "escape"))
+        self.discord_upload_enabled_var = tk.BooleanVar(value=config_data.get("discord_upload_enabled", False))
         self.discord_webhook_var = tk.StringVar(value=config_data.get("discord_webhook_url", ""))
+        self.telegram_upload_enabled_var = tk.BooleanVar(value=config_data.get("telegram_upload_enabled", False))
         self.telegram_token_var = tk.StringVar(value=config_data.get("telegram_bot_token", ""))
         self.telegram_chat_id_var = tk.StringVar(value=config_data.get("telegram_chat_id", ""))
 
@@ -126,11 +131,40 @@ class SetupWindow:
         row += 1
         row = self._add_combobox(post_view_tab, row, "Result display (seconds):", self.post_capture_var, RESULT_DISPLAY_CHOICES)
 
-        connections_tab = self._add_tab(notebook, "Discord & Telegram")
+        storage_tab = self._add_tab(notebook, "Photo Storage")
         row = 0
-        row = self._add_entry(connections_tab, row, "Discord webhook URL:", self.discord_webhook_var, width=36)
-        row = self._add_entry(connections_tab, row, "Telegram bot token:", self.telegram_token_var, width=36)
-        row = self._add_entry(connections_tab, row, "Telegram chat ID:", self.telegram_chat_id_var, width=36)
+        ttk.Label(storage_tab, text="Local Storage", font=("Segoe UI", 11, "bold")).grid(
+            row=row, column=0, columnspan=2, sticky="w"
+        )
+        row += 1
+        ttk.Label(storage_tab, text="Photos are always saved here, in addition to any destinations below.").grid(
+            row=row, column=0, columnspan=2, sticky="w", pady=(0, 4)
+        )
+        row += 1
+        local_row = ttk.Frame(storage_tab)
+        local_row.grid(row=row, column=0, columnspan=2, sticky="w", pady=(0, 4))
+        ttk.Label(local_row, text=str(self._photos_dir_path()), foreground="#555").pack(side="left")
+        ttk.Button(local_row, text="Open Folder", command=self._on_open_photos_folder).pack(side="left", padx=(8, 0))
+        row += 1
+
+        ttk.Separator(storage_tab, orient="horizontal").grid(row=row, column=0, columnspan=2, sticky="ew", pady=8)
+        row += 1
+
+        ttk.Checkbutton(storage_tab, text="Post to Discord", variable=self.discord_upload_enabled_var).grid(
+            row=row, column=0, columnspan=2, sticky="w", pady=(0, 4)
+        )
+        row += 1
+        row = self._add_entry(storage_tab, row, "Discord webhook URL:", self.discord_webhook_var, width=36)
+
+        ttk.Separator(storage_tab, orient="horizontal").grid(row=row, column=0, columnspan=2, sticky="ew", pady=8)
+        row += 1
+
+        ttk.Checkbutton(storage_tab, text="Post to Telegram", variable=self.telegram_upload_enabled_var).grid(
+            row=row, column=0, columnspan=2, sticky="w", pady=(0, 4)
+        )
+        row += 1
+        row = self._add_entry(storage_tab, row, "Telegram bot token:", self.telegram_token_var, width=36)
+        row = self._add_entry(storage_tab, row, "Telegram chat ID:", self.telegram_chat_id_var, width=36)
 
         button_row = ttk.Frame(outer)
         button_row.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(16, 0))
@@ -202,6 +236,17 @@ class SetupWindow:
     def _on_clear_logo(self):
         self.start_logo_path_var.set("")
 
+    def _photos_dir_path(self) -> Path:
+        photos_dir = Path(self.initial_config.get("photos_dir", "photos"))
+        if not photos_dir.is_absolute():
+            photos_dir = ROOT_DIR / photos_dir
+        return photos_dir
+
+    def _on_open_photos_folder(self):
+        path = self._photos_dir_path()
+        path.mkdir(parents=True, exist_ok=True)
+        os.startfile(str(path))
+
     def _update_preview(self):
         frame = self.camera.read_frame_rgb() if self.camera is not None else None
         if frame is not None:
@@ -242,7 +287,9 @@ class SetupWindow:
             "scale_review_photo": self.scale_review_photo_var.get(),
             "capture_key": self.capture_key_var.get(),
             "quit_key": self.quit_key_var.get(),
+            "discord_upload_enabled": self.discord_upload_enabled_var.get(),
             "discord_webhook_url": self.discord_webhook_var.get().strip(),
+            "telegram_upload_enabled": self.telegram_upload_enabled_var.get(),
             "telegram_bot_token": self.telegram_token_var.get().strip(),
             "telegram_chat_id": self.telegram_chat_id_var.get().strip(),
         }

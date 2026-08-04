@@ -2,6 +2,16 @@
 
 All notable changes to BoothBot are documented in this file.
 
+## [1.3.0] - 2026-08-04
+
+### Added
+- Setup screen: "Photo Review" and "Result" tabs merged into a single "Post View" tab; "Discord & Telegram" renamed to "Photo Storage" and reorganized around a "Local Storage" section (shows the photos folder path with an **Open Folder** button) followed by independent "Post to Discord" / "Post to Telegram" enable checkboxes - both off by default, so you can hold saved credentials without posting until you're ready.
+- "Scale review photo to 75%" now defaults to on.
+
+### Changed
+- Photos are always saved locally regardless of whether Discord/Telegram are enabled (this was already true, but is now surfaced clearly): if both are disabled, the result screen shows "Saved!" instead of an error, and no network request is attempted.
+- Fixed the result screen's success/failure detection, which previously guessed by checking for the word "sent" in the status message rather than using the actual upload result.
+
 ## [1.2.0] - 2026-08-04
 
 ### Added
