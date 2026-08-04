@@ -4,6 +4,15 @@ from typing import NamedTuple
 import requests
 
 REQUEST_TIMEOUT = 20
+
+# Telegram's sendPhoto can take several minutes to actually complete server-side even though the
+# photo does eventually go through - a short client timeout just means we stop listening before
+# Telegram answers, not that anything failed. Retrying instead of waiting risks duplicate posts
+# (see telegram_max_retries in config.py), so a single patient attempt is the safer fix. A quick
+# connect timeout still fails fast if the network is genuinely down.
+TELEGRAM_CONNECT_TIMEOUT = 10
+TELEGRAM_READ_TIMEOUT = 600
+
 TEST_MESSAGE = "BoothBot test message - this destination is configured correctly."
 
 DESTINATION_LABELS = {"discord": "Discord", "telegram": "Telegram", "local": "Local"}
@@ -15,10 +24,10 @@ class UploadResult(NamedTuple):
     message: str
 
 
-def _post(destination, url, ok_statuses, success_message="sent", **kwargs) -> UploadResult:
+def _post(destination, url, ok_statuses, success_message="sent", timeout=REQUEST_TIMEOUT, **kwargs) -> UploadResult:
     label = DESTINATION_LABELS[destination]
     try:
-        resp = requests.post(url, timeout=REQUEST_TIMEOUT, **kwargs)
+        resp = requests.post(url, timeout=timeout, **kwargs)
     except requests.RequestException as exc:
         return UploadResult(destination, False, f"{label}: {exc}")
     if resp.status_code in ok_statuses:
@@ -45,6 +54,7 @@ def post_to_telegram(photo_path, bot_token: str, chat_id: str) -> UploadResult:
                 "telegram", url, (200,),
                 data={"chat_id": chat_id},
                 files={"photo": (photo_path.name, f, "image/jpeg")},
+                timeout=(TELEGRAM_CONNECT_TIMEOUT, TELEGRAM_READ_TIMEOUT),
             )
     except OSError as exc:
         return UploadResult("telegram", False, f"Telegram: could not read photo file - {exc}")

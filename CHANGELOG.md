@@ -2,6 +2,11 @@
 
 All notable changes to BoothBot are documented in this file.
 
+## [1.7.2] - 2026-08-04
+
+### Changed
+- Telegram photo uploads now wait up to 10 minutes for a response (up from 20 seconds) instead of giving up and retrying. Telegram's `sendPhoto` can take several minutes to actually complete even though the photo does eventually go through - the old short timeout meant we usually stopped listening before Telegram ever answered, misreporting a real (if slow) success as a failure. A patient single attempt is also safer than the old short-timeout-plus-retry approach, which risked reposting a photo that was going to succeed anyway. Discord and the "Send Test Message" buttons are unaffected - both still fail fast at 20 seconds.
+
 ## [1.7.1] - 2026-08-04
 
 ### Added
