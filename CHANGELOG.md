@@ -2,6 +2,16 @@
 
 All notable changes to BoothBot are documented in this file.
 
+## [1.2.0] - 2026-08-04
+
+### Added
+- Setup screen reorganized into tabs (General, Start Page, Live View, Photo Review, Result, Discord & Telegram) instead of one long scrolling list, with General moved first.
+- Dropdown selectors: camera index, and countdown/photo review/result display seconds are now Comboboxes with common preset values (still editable for custom values).
+- "Remember these settings for next time" checkbox in the General tab, checked by default - uncheck it to try settings for the current run only without overwriting `config.json`.
+
+### Changed
+- Pressing the quit key in the fullscreen view now returns to the setup screen (pre-filled with your last settings) instead of closing the program entirely. Closing the window outright (e.g. Alt+F4), or clicking Quit in the setup screen, still exits.
+
 ## [1.1.1] - 2026-08-04
 
 ### Added
