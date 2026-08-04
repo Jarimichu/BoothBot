@@ -1,5 +1,5 @@
 # BoothBot
-**Version 1.1.0** ([changelog](CHANGELOG.md))
+**Version 1.1.1** ([changelog](CHANGELOG.md))
 
 Button-triggered photobooth for events - snaps a photo from a webcam after a countdown and auto-posts it to Telegram/Discord.
 
@@ -20,6 +20,7 @@ Button-triggered photobooth for events - snaps a photo from a webcam after a cou
    - **Start page message / logo**: shown fullscreen when the app first launches, before the live camera view - a "Press button to start photobooth!"-style message plus an optional logo image (click Browse to pick a PNG/JPG, Clear to remove it). Pressing the capture button/key here moves on to the live view.
    - **Live view message**: the text shown on the TV before a group presses the button (e.g. "Press the button to take a photo!" or a custom line for your event). Wraps automatically if it's long.
    - **Review message (top) / Review message (bottom)**: smaller text overlaid near the top and bottom of the captured photo while it's shown after the flash, so the photo itself stays the focus (e.g. "Thanks for coming to the con!" / "Please see your photo on the Telegram channel").
+   - **Scale review photo to 75%**: when checked, the photo is shrunk to 75% of the screen and centered (during review, uploading, and the result message) instead of filling the screen, so the top/bottom messages sit clearly above and below it instead of overlapping.
    - **Capture button key / Quit key**: click into the field and press the actual button/key you want to use (no need to know its name) - for the USB button, this doubles as a quick test that it registers as a keypress at all.
    - **Countdown / photo review / result display seconds**, **fullscreen toggle**.
    - **Discord webhook URL**: create one under Discord channel Settings -> Integrations -> Webhooks.

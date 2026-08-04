@@ -2,6 +2,11 @@
 
 All notable changes to BoothBot are documented in this file.
 
+## [1.1.1] - 2026-08-04
+
+### Added
+- "Scale review photo to 75%" setting: when enabled, the captured photo is shrunk to 75% of the screen and centered during the review, uploading, and result phases, so the top/bottom review messages sit clearly above and below it instead of overlapping.
+
 ## [1.1.0] - 2026-08-04
 
 ### Added
