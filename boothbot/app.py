@@ -77,6 +77,7 @@ class BoothApp:
         self.countdown_start = None
         self.captured_frame = None
         self.result_lines = []
+        self.result_success = False
 
     def _load_start_logo(self):
         if not self.config.start_logo_path:
@@ -156,6 +157,7 @@ class BoothApp:
                 pass
             else:
                 self.result_lines = [msg for _, msg in results]
+                self.result_success = any(success for success, _ in results)
                 self.state = RESULT
                 self.state_entered_at = now
 
@@ -173,7 +175,8 @@ class BoothApp:
         self._start_upload()
 
     def _start_upload(self):
-        """Kicks off the upload in the background so it overlaps with the photo review, not after it."""
+        """Kicks off the upload in the background so it overlaps with the photo review, not after it.
+        The photo is always saved locally first, regardless of which (if any) online destinations are enabled."""
         if self.captured_frame is None:
             self.upload_queue.put([(False, "Capture failed - no frame from camera")])
             return
@@ -181,6 +184,10 @@ class BoothApp:
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         photo_path = self.config.photos_dir / f"booth_{timestamp}.jpg"
         self.camera.save_frame(self.captured_frame, photo_path)
+
+        if not (self.config.discord_enabled or self.config.telegram_enabled):
+            self.upload_queue.put([(True, "Saved locally")])
+            return
 
         def worker():
             results = uploader.post_photo(photo_path, self.config)
@@ -198,6 +205,7 @@ class BoothApp:
             self.state_entered_at = time.time()
         else:
             self.result_lines = [msg for _, msg in results]
+            self.result_success = any(success for success, _ in results)
             self.state = RESULT
             self.state_entered_at = time.time()
 
@@ -253,9 +261,13 @@ class BoothApp:
             self._draw_centered_text("Sending your photo...", self.font_med, WHITE, y_ratio=0.9, shadow=True)
 
         elif self.state == RESULT:
-            any_success = any("sent" in line.lower() for line in self.result_lines)
-            color = GREEN if any_success else RED
-            headline = "Sent!" if any_success else "Something went wrong"
+            color = GREEN if self.result_success else RED
+            if not self.result_success:
+                headline = "Something went wrong"
+            elif self.config.discord_enabled or self.config.telegram_enabled:
+                headline = "Sent!"
+            else:
+                headline = "Saved!"
             self._draw_centered_text(headline, self.font_med, color, y_ratio=0.85, shadow=True)
             for i, line in enumerate(self.result_lines):
                 self._draw_centered_text(line, self.font_small, WHITE, y_ratio=0.93 + i * 0.03, shadow=True)

@@ -1,5 +1,5 @@
 # BoothBot
-**Version 1.2.0** ([changelog](CHANGELOG.md))
+**Version 1.3.0** ([changelog](CHANGELOG.md))
 
 Button-triggered photobooth for events - snaps a photo from a webcam after a countdown and auto-posts it to Telegram/Discord.
 
@@ -19,9 +19,8 @@ Button-triggered photobooth for events - snaps a photo from a webcam after a cou
    - **General**: capture button key / quit key (click the field, then press the actual button/key you want - no need to know its name), the fullscreen toggle, and **Remember these settings for next time** (checked by default) - uncheck it to try something out for this run only without overwriting `config.json`.
    - **Start Page**: the message and optional logo shown fullscreen when the app first launches, before the live camera view (click Browse to pick a PNG/JPG for the logo, Clear to remove it). Pressing the capture button/key here moves on to the live view.
    - **Live View**: the message shown on the TV before a group presses the button, and the countdown length (a dropdown of common values - 3 to 10 seconds - but still editable if you want something else).
-   - **Photo Review**: how long the captured photo is shown (dropdown), the top/bottom messages overlaid on it (e.g. "Thanks for coming to the con!" / "Please see your photo on the Telegram channel"), and the "Scale review photo to 75%" checkbox - when checked, the photo shrinks and centers so those messages sit clearly above/below it instead of overlapping.
-   - **Result**: how long the send-succeeded/failed message is shown (dropdown).
-   - **Discord & Telegram**: webhook URL (Discord channel Settings -> Integrations -> Webhooks), bot token ([@BotFather](https://t.me/BotFather)), and chat ID (`https://api.telegram.org/bot<token>/getUpdates`, or message [@userinfobot](https://t.me/userinfobot) for a personal chat).
+   - **Post View**: how long the captured photo is shown (dropdown), the top/bottom messages overlaid on it (e.g. "Thanks for coming to the con!" / "Please see your photo on the Telegram channel"), the "Scale review photo to 75%" checkbox (checked by default - shrinks and centers the photo so those messages sit clearly above/below it instead of overlapping), and how long the send-succeeded/failed message is shown afterward (dropdown).
+   - **Photo Storage**: photos are always saved locally to a `photos/` folder next to the app - click **Open Folder** to see them. Below that, **Post to Discord** and **Post to Telegram** checkboxes (both off by default - turn one on once you've filled in its credentials below) let you enable/disable each destination independently without clearing its saved credentials - webhook URL (Discord channel Settings -> Integrations -> Webhooks), bot token ([@BotFather](https://t.me/BotFather)), and chat ID (`https://api.telegram.org/bot<token>/getUpdates`, or message [@userinfobot](https://t.me/userinfobot) for a personal chat).
 
    Click **Start Photobooth** to launch the fullscreen booth view (saving these to `config.json` unless you unchecked "Remember these settings"), or **Quit** to exit without starting.
 
@@ -33,9 +32,9 @@ Once fullscreen, press `Esc` (or whichever quit key you configured) to return to
 - **Start page**: the first thing shown fullscreen - a configurable message and optional logo, no camera feed. Pressing the button moves to the live view.
 - **Live view**: shows the webcam feed fullscreen with a "press the button" prompt. Returns to the start page automatically after 30 seconds if no photo is taken.
 - **Button press**: starts a countdown (big on-screen numbers).
-- **Capture**: grabs a frame, flashes the screen white, and saves the photo to `photos/`. The upload to Discord/Telegram starts immediately in the background.
-- **Photo review**: displays the captured photo by itself for the configured number of seconds, while the upload happens behind the scenes.
-- **Result**: shows a success/failure message (waiting for the upload to finish first, if it's still in progress) for the configured number of seconds, then returns to the start page.
+- **Capture**: grabs a frame, flashes the screen white, and always saves the photo to `photos/` locally. If Discord and/or Telegram are enabled, that upload starts immediately in the background too.
+- **Photo review**: displays the captured photo by itself for the configured number of seconds, while any enabled upload happens behind the scenes.
+- **Result**: shows a success/failure message (waiting for the upload to finish first, if one is in progress) for the configured number of seconds, then returns to the start page. If both Discord and Telegram are disabled, this just confirms the photo was saved locally.
 
 ## Packaging as a standalone .exe
 

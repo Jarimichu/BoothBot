@@ -32,7 +32,9 @@ DEFAULTS = {
     "review_message_top": "Thanks for coming to the con!",
     "review_message_bottom": "Please see your photo on the Telegram channel",
     "scale_review_photo": True,
+    "discord_upload_enabled": False,
     "discord_webhook_url": "",
+    "telegram_upload_enabled": False,
     "telegram_bot_token": "",
     "telegram_chat_id": "",
 }
@@ -54,11 +56,11 @@ class Config:
 
     @property
     def discord_enabled(self) -> bool:
-        return bool(self.discord_webhook_url)
+        return bool(self.discord_upload_enabled and self.discord_webhook_url)
 
     @property
     def telegram_enabled(self) -> bool:
-        return bool(self.telegram_bot_token and self.telegram_chat_id)
+        return bool(self.telegram_upload_enabled and self.telegram_bot_token and self.telegram_chat_id)
 
 
 def load_config_dict() -> dict:
