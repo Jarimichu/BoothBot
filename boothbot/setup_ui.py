@@ -53,12 +53,28 @@ class SetupWindow:
         self.log_row_data = {}
         self.log_destination_summary_vars = {}
 
+        # Read only from _status_snapshot(), which runs on the monitor's HTTP handler thread -
+        # must stay plain attributes, set only from the main thread (see _update_preview).
+        self._setup_started_at = datetime.now()
+        self.camera_ok = None
+        self.camera_checked_at = None
+
         self._test_queue = queue.Queue()
         self._tests_in_flight = set()
         self._test_status_vars = {}
         self._test_status_labels = {}
         self._test_buttons = {}
         self._lan_ip = monitor_server.get_lan_ip()
+
+        # Runs for as long as the setup screen is open, not just the fullscreen booth session -
+        # mirrors BoothApp.run()'s own monitor lifecycle, stopped in _cleanup().
+        self.monitor = None
+        self.monitor_url = None
+        if config_data.get("monitor_enabled", True):
+            self.monitor = monitor_server.MonitorServer(
+                self._status_snapshot, port=config_data.get("monitor_port", monitor_server.DEFAULT_PORT)
+            )
+            self.monitor_url = self.monitor.start()
 
         self.root = tk.Tk()
         self.root.title(f"BoothBot Setup v{__version__}")
@@ -74,7 +90,9 @@ class SetupWindow:
         self.monitor_enabled_var = tk.BooleanVar(value=config_data.get("monitor_enabled", True))
         self.monitor_port_var = tk.IntVar(value=config_data.get("monitor_port", monitor_server.DEFAULT_PORT))
         self.monitor_show_url_var = tk.BooleanVar(value=config_data.get("monitor_show_url", False))
-        self.monitor_url_var = tk.StringVar(value=f"http://{self._lan_ip}:{self.monitor_port_var.get()}")
+        self.monitor_url_var = tk.StringVar(
+            value=self.monitor_url or f"http://{self._lan_ip}:{self.monitor_port_var.get()}"
+        )
         self.start_message_var = tk.StringVar(
             value=config_data.get("start_message", "Press button to start photobooth!")
         )
@@ -170,7 +188,7 @@ class SetupWindow:
         ttk.Label(monitor_url_row, textvariable=self.monitor_url_var, foreground="#555").pack(side="left")
         ttk.Button(monitor_url_row, text="Copy", command=self._on_copy_monitor_url).pack(side="left", padx=(8, 0))
         row += 1
-        ttk.Label(general_tab, text="(only reachable while the photobooth is running)", foreground="#888").grid(
+        ttk.Label(general_tab, text="(reachable now, right here in setup - not just once the photobooth starts)", foreground="#888").grid(
             row=row, column=0, columnspan=2, sticky="w"
         )
         row += 1
@@ -797,6 +815,8 @@ class SetupWindow:
 
     def _update_preview(self):
         frame = self.camera.read_frame_rgb() if self.camera is not None else None
+        self.camera_ok = frame is not None
+        self.camera_checked_at = datetime.now()
         if frame is not None:
             image = Image.fromarray(frame)
             image.thumbnail(PREVIEW_SIZE, Image.LANCZOS)
@@ -808,6 +828,37 @@ class SetupWindow:
             self.preview_label.image = photo  # keep a reference so it isn't garbage-collected
 
         self.root.after(PREVIEW_INTERVAL_MS, self._update_preview)
+
+    def _status_snapshot(self):
+        """Called from the monitor server's handler thread - must only read plain attributes and
+        capture_log (file I/O, no Tk involved), never a tk.Variable or any other Tkinter object;
+        Tcl/Tk isn't thread-safe. destinations is read from self.initial_config (the persisted
+        config passed into __init__, never mutated afterward) rather than the live form fields,
+        both because that's cross-thread-safe and because nothing's actually using your
+        in-progress edits until you click Start Photobooth anyway."""
+        derived = capture_log.latest_status(capture_log.read_entries())
+        destinations = []
+        if self.initial_config.get("discord_upload_enabled") and self.initial_config.get("discord_webhook_url"):
+            destinations.append("Discord")
+        if (
+            self.initial_config.get("telegram_upload_enabled")
+            and self.initial_config.get("telegram_bot_token")
+            and self.initial_config.get("telegram_chat_id")
+        ):
+            destinations.append("Telegram")
+        return {
+            "state": "setup",
+            "session_started_at": self._setup_started_at,
+            "camera_ok": self.camera_ok,
+            "camera_checked_at": self.camera_checked_at,
+            "last_capture_at": derived["last_capture_at"],
+            "last_success_at": derived["last_success_at"],
+            "last_error": derived["last_error"],
+            "captures_this_session": 0,
+            "failures_this_session": 0,
+            "consecutive_failures": derived["consecutive_failures"],
+            "destinations": destinations,
+        }
 
     # ---------- Actions ----------
 
@@ -857,6 +908,9 @@ class SetupWindow:
         if self.camera is not None:
             self.camera.release()
             self.camera = None
+        if self.monitor is not None:
+            self.monitor.stop()
+            self.monitor = None
 
     def run(self):
         self.root.mainloop()

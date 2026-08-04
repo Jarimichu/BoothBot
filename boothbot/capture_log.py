@@ -212,6 +212,43 @@ def classify_entry(entry: dict) -> str:
     return "failed"
 
 
+def latest_status(entries: list[dict]) -> dict:
+    """Derives 'how did the pipeline recently do' from the tail of the log - the setup screen's
+    substitute for the live in-memory status BoothApp tracks during an active session, since
+    setup has no session in progress to observe directly."""
+    ordered = sorted(entries, key=lambda entry: entry["timestamp"], reverse=True)
+
+    last_capture_at = ordered[0]["timestamp"] if ordered else None
+    last_success_at = None
+    last_error = None
+    consecutive_failures = 0
+
+    for entry in ordered:
+        # "local" (no destinations enabled, saved fine) counts as success here too - matches
+        # _finalize_capture's own all_ok definition in app.py (saved_locally and every *enabled*
+        # destination succeeded), so a purely local-only booth doesn't look perpetually broken.
+        if classify_entry(entry) in ("delivered", "local"):
+            last_success_at = entry["resolved_at"]
+            break
+        consecutive_failures += 1
+        if last_error is None:
+            failing = []
+            if not entry["saved_locally"]:
+                failing.append("Local save failed")
+            if entry["discord_enabled"] and not entry["discord_success"]:
+                failing.append(entry["discord_message"] or "Discord: failed")
+            if entry["telegram_enabled"] and not entry["telegram_success"]:
+                failing.append(entry["telegram_message"] or "Telegram: failed")
+            last_error = (entry["resolved_at"], "; ".join(failing) if failing else "Unknown error")
+
+    return {
+        "last_capture_at": last_capture_at,
+        "last_success_at": last_success_at,
+        "last_error": last_error,
+        "consecutive_failures": consecutive_failures,
+    }
+
+
 def summarize(entries: list[dict]) -> tuple[list[dict], dict]:
     """Buckets entries into 24 hourly slots (delivered/local/partial/failed counts) plus overall totals."""
     hourly = [{"total": 0, "delivered": 0, "local": 0, "partial": 0, "failed": 0} for _ in range(HOURS_IN_DAY)]

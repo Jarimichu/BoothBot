@@ -2,6 +2,14 @@
 
 All notable changes to BoothBot are documented in this file.
 
+## [1.7.1] - 2026-08-04
+
+### Added
+- The remote monitor now runs while the setup screen is open too, not just during the live photobooth session - useful for checking the dashboard from a phone while setting up, or right after a session ends if a photo is still retrying in the background. It reports camera status, recent capture history (read back from the log, since there's no live session to observe directly), and the same "still sending" panel as during a live session.
+
+### Changed
+- The General tab's monitor URL note no longer says "(only reachable while the photobooth is running)" - it's reachable as soon as setup opens.
+
 ## [1.7.0] - 2026-08-04
 
 ### Added
