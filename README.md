@@ -1,5 +1,5 @@
 # BoothBot
-**Version 1.3.1** ([changelog](CHANGELOG.md))
+**Version 1.4.0** ([changelog](CHANGELOG.md))
 
 Button-triggered photobooth for events - snaps a photo from a webcam after a countdown and auto-posts it to Telegram/Discord.
 
@@ -20,7 +20,8 @@ Button-triggered photobooth for events - snaps a photo from a webcam after a cou
    - **Start Page**: the message and optional logo shown fullscreen when the app first launches, before the live camera view (click Browse to pick a PNG/JPG for the logo, Clear to remove it). Pressing the capture button/key here moves on to the live view.
    - **Live View**: the message shown on the TV before a group presses the button, and the countdown length (a dropdown of common values - 3 to 10 seconds - but still editable if you want something else).
    - **Post View**: how long the captured photo is shown (dropdown), the top/bottom messages overlaid on it (e.g. "Thanks for coming to the con!" / "Please see your photo on the Telegram channel"), the "Scale review photo to 75%" checkbox (checked by default - shrinks and centers the photo so those messages sit clearly above/below it instead of overlapping), and how long the send-succeeded/failed message is shown afterward (dropdown).
-   - **Photo Storage**: photos are always saved locally to a `photos/` folder next to the app - click **Open Folder** to see them. Below that, **Post to Discord** and **Post to Telegram** checkboxes (both off by default - turn one on once you've filled in its credentials below) let you enable/disable each destination independently without clearing its saved credentials - webhook URL (Discord channel Settings -> Integrations -> Webhooks), bot token ([@BotFather](https://t.me/BotFather)), and chat ID (`https://api.telegram.org/bot<token>/getUpdates`, or message [@userinfobot](https://t.me/userinfobot) for a personal chat).
+   - **Photo Storage**: photos are always saved locally to a `photos/` folder next to the app - click **Open Folder** to see them. Below that, **Post to Discord** and **Post to Telegram** checkboxes (both off by default - turn one on once you've filled in its credentials below) let you enable/disable each destination independently without clearing its saved credentials - webhook URL (Discord channel Settings -> Integrations -> Webhooks), bot token ([@BotFather](https://t.me/BotFather)), and chat ID (`https://api.telegram.org/bot<token>/getUpdates`, or message [@userinfobot](https://t.me/userinfobot) for a personal chat). Each destination has a **Send Test Message** button (enabled once its fields are filled in) that posts a real test message, so you can confirm it actually works before the event starts instead of finding out on the first guest photo.
+   - **Logs**: a record of every photo taken, kept in `logs/captures.csv` next to the app (click **Open Folder** to see it) - a bar chart of photo counts by hour of day, color-coded by outcome (delivered / saved locally only / partly delivered / failed), plus a summary of totals and per-destination success/failure counts. Click **Refresh** to pick up photos taken since the tab was last viewed.
 
    Click **Start Photobooth** to launch the fullscreen booth view (saving these to `config.json` unless you unchecked "Remember these settings"), or **Quit** to exit without starting.
 
@@ -35,6 +36,7 @@ Once fullscreen, press `Esc` (or whichever quit key you configured) to return to
 - **Capture**: grabs a frame, flashes the screen white, and always saves the photo to `photos/` locally. If Discord and/or Telegram are enabled, that upload starts immediately in the background too.
 - **Photo review**: displays the captured photo by itself for the configured number of seconds, while any enabled upload happens behind the scenes.
 - **Result**: shows a success/failure message (waiting for the upload to finish first, if one is in progress) for the configured number of seconds, then returns to the start page. If both Discord and Telegram are disabled, this just confirms the photo was saved locally.
+- **Capture log**: every photo attempt (successful or not) is appended to `logs/captures.csv` - timestamp, whether it saved locally, and whether each enabled destination succeeded. The setup screen's Logs tab reads this to show the hourly chart.
 
 ## Packaging as a standalone .exe
 
@@ -43,7 +45,7 @@ Once you're happy with it, bundle it into a single .exe so the booth PC doesn't 
 pip install pyinstaller
 pyinstaller BoothBot.spec --distpath .
 ```
-This produces `BoothBot.exe` right in the project root - a single windowed (no console) file, built from the checked-in `BoothBot.spec` (`--distpath .` skips PyInstaller's default `dist/` subfolder). Copy `BoothBot.exe` to wherever you want it on the booth PC and just run it; on first launch it creates `config.json` and a `photos/` folder right next to itself (settings and captures live beside the exe, not in a temp folder, so they persist between runs). Rerun the exe any time to reopen the setup screen and adjust settings.
+This produces `BoothBot.exe` right in the project root - a single windowed (no console) file, built from the checked-in `BoothBot.spec` (`--distpath .` skips PyInstaller's default `dist/` subfolder). Copy `BoothBot.exe` to wherever you want it on the booth PC and just run it; on first launch it creates `config.json`, a `photos/` folder, and a `logs/` folder right next to itself (settings, captures, and the capture log all live beside the exe, not in a temp folder, so they persist between runs). Rerun the exe any time to reopen the setup screen and adjust settings.
 
 To have it start automatically when the booth PC boots, put a shortcut to `BoothBot.exe` in the Windows Startup folder (`Win+R` -> `shell:startup`).
 

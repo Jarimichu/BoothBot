@@ -2,6 +2,17 @@
 
 All notable changes to BoothBot are documented in this file.
 
+## [1.4.0] - 2026-08-04
+
+### Added
+- "Send Test Message" buttons for Discord and Telegram in the Photo Storage tab, so credentials can be verified working (a real test message is posted) before the first real event photo, without needing to enable the destination first.
+- New Logs tab: a capture log (`logs/captures.csv`) records every photo attempt with timestamp, local-save status, and per-destination success/failure; the tab shows a bar chart of photo counts by hour of day (color-coded: delivered / saved locally only / partly delivered / failed), a summary of totals, and a Refresh button.
+
+### Changed
+- `post_photo`'s results are now attributed by destination name (`UploadResult`) instead of positionally, fixing a latent class of bug where results could be mismatched to the wrong destination.
+- A failed local photo save is no longer silently reported as "Saved locally" - `camera.save_frame` now reports whether the write actually succeeded.
+- Refactored the two near-identical result-handling code paths in the booth's state machine into one shared method, which is also now the single place the capture log is written.
+
 ## [1.3.1] - 2026-08-04
 
 ### Fixed

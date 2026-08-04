@@ -20,9 +20,9 @@ class Camera:
             return None
         return cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
 
-    def save_frame(self, frame_rgb, path):
+    def save_frame(self, frame_rgb, path) -> bool:
         frame_bgr = cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2BGR)
-        cv2.imwrite(str(path), frame_bgr)
+        return bool(cv2.imwrite(str(path), frame_bgr))
 
     def release(self):
         if self.capture is not None:
