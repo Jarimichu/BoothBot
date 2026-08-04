@@ -2,6 +2,14 @@
 
 All notable changes to BoothBot are documented in this file.
 
+## [1.3.1] - 2026-08-04
+
+### Fixed
+- "Post to Discord" / "Post to Telegram" now genuinely default to off in the underlying config defaults, matching the setup screen's checkboxes.
+
+### Changed
+- Repo housekeeping: `photos/` is now fully gitignored (previously only `.jpg`/`.png` inside it were), and the tracked `.gitkeep` placeholder was removed since the app already recreates the folder automatically at startup.
+
 ## [1.3.0] - 2026-08-04
 
 ### Added
