@@ -1,7 +1,7 @@
 """Fullscreen kiosk photobooth: start page -> live preview -> countdown -> capture -> upload."""
 import threading
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import pygame
@@ -235,39 +235,64 @@ class BoothApp:
     def _upload_with_retries(self, photo_path, captured_at, saved_locally, config):
         """Runs entirely on a background thread. Retries only the destinations that haven't
         succeeded yet (never a destination that already posted - that would duplicate it),
-        checking back every UPLOAD_RETRY_INTERVAL_S until everything succeeds or
-        UPLOAD_RETRY_WINDOW_S has passed since the photo was taken."""
+        checking back every UPLOAD_RETRY_INTERVAL_S until everything succeeds, each destination
+        hits its own attempt cap (see max_attempts below), or UPLOAD_RETRY_WINDOW_S has passed
+        since the photo was taken. Registers itself with capture_log's pending registry while in
+        flight, so the Logs tab can show it before it has a captures.csv row."""
         pending = {}
         if config.discord_enabled:
             pending["discord"] = None
         if config.telegram_enabled:
             pending["telegram"] = None
 
+        # Telegram's failure signal is unreliable - a request can time out (or otherwise lose its
+        # response) even though the photo was already delivered, see uploader.py - so retrying it
+        # on a timer like Discord risks reposting a photo that already went through. Cap its total
+        # attempts via config instead (default 0 retries = try once, never resend); Discord keeps
+        # retrying purely on the time-based deadline below, since its webhook responses are reliable.
+        max_attempts = {"discord": None, "telegram": config.telegram_max_retries + 1}
+
         attempts = {name: 0 for name in pending}
         last_result = {}
         deadline = time.time() + UPLOAD_RETRY_WINDOW_S
+        key = captured_at.isoformat()
 
-        while pending and time.time() < deadline:
-            for name in list(pending.keys()):
-                attempts[name] += 1
-                try:
-                    if name == "discord":
-                        result = uploader.post_to_discord(photo_path, config.discord_webhook_url)
-                    else:
-                        result = uploader.post_to_telegram(photo_path, config.telegram_bot_token, config.telegram_chat_id)
-                except Exception as exc:
-                    # This loop runs unattended for up to UPLOAD_RETRY_WINDOW_S with no supervision -
-                    # an unexpected exception here must never kill the thread, or this capture would
-                    # never get logged at all (worse than a false-negative failure entry).
-                    result = uploader.UploadResult(name, False, f"{name}: unexpected error - {exc}")
-                last_result[name] = result
-                if result.success:
-                    del pending[name]
-            if pending:
-                remaining = deadline - time.time()
-                if remaining <= 0:
-                    break
-                time.sleep(min(UPLOAD_RETRY_INTERVAL_S, remaining))
+        if pending:
+            capture_log.register_pending(
+                key, photo_file=photo_path.name if photo_path else "", captured_at=captured_at,
+                saved_locally=saved_locally, discord_enabled=config.discord_enabled,
+                telegram_enabled=config.telegram_enabled,
+                deadline_at=captured_at + timedelta(seconds=UPLOAD_RETRY_WINDOW_S),
+            )
+
+        try:
+            while pending and time.time() < deadline:
+                for name in list(pending.keys()):
+                    attempts[name] += 1
+                    try:
+                        if name == "discord":
+                            result = uploader.post_to_discord(photo_path, config.discord_webhook_url)
+                        else:
+                            result = uploader.post_to_telegram(photo_path, config.telegram_bot_token, config.telegram_chat_id)
+                    except Exception as exc:
+                        # This loop runs unattended for up to UPLOAD_RETRY_WINDOW_S with no supervision -
+                        # an unexpected exception here must never kill the thread, or this capture would
+                        # never get logged at all (worse than a false-negative failure entry).
+                        result = uploader.UploadResult(name, False, f"{name}: unexpected error - {exc}")
+                    last_result[name] = result
+                    capture_log.update_pending(
+                        key, name, attempts=attempts[name], success=result.success, message=result.message
+                    )
+                    limit = max_attempts[name]
+                    if result.success or (limit is not None and attempts[name] >= limit):
+                        del pending[name]
+                if pending:
+                    remaining = deadline - time.time()
+                    if remaining <= 0:
+                        break
+                    time.sleep(min(UPLOAD_RETRY_INTERVAL_S, remaining))
+        finally:
+            capture_log.resolve_pending(key)
 
         results = list(last_result.values())
         if not results:

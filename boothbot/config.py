@@ -32,6 +32,7 @@ DEFAULTS = {
     "telegram_upload_enabled": False,
     "telegram_bot_token": "",
     "telegram_chat_id": "",
+    "telegram_max_retries": 0,
     "monitor_enabled": True,
     "monitor_port": 8080,
     "monitor_show_url": False,

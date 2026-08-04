@@ -1,5 +1,6 @@
 """Append-only CSV log of every capture attempt, read back by the setup screen's Logs tab."""
 import csv
+import threading
 from datetime import datetime
 
 from .config import ROOT_DIR
@@ -22,9 +23,64 @@ FIELDNAMES = [
     "resolved_at",
 ]
 
+# The pre-verbose-logging column set (7 fields). A log file written by an older version has this
+# as its header; new rows must never be appended under it as-is, or csv.DictReader misaligns every
+# column once it hits a 12-value row under a 7-name header.
+LEGACY_FIELDNAMES = [
+    "timestamp", "photo_file", "saved_locally", "discord_enabled", "discord_success",
+    "telegram_enabled", "telegram_success",
+]
+
 TIMESTAMP_FORMAT = "%Y-%m-%d %H:%M:%S"
 
 HOURS_IN_DAY = 24
+
+# Guards every read-modify-write of captures.csv. A background retry thread from a previous booth
+# session can still be calling append_capture() while the setup screen concurrently calls
+# delete_entry() - both read the whole file and rewrite it, so without this lock one write can
+# silently clobber the other.
+_file_lock = threading.Lock()
+
+
+def _migrate_header_if_needed() -> None:
+    """Rewrites the log file to use the current FIELDNAMES header if it's missing or stale, so a
+    file that predates verbose logging (or one that already got mixed-width rows appended under a
+    stale header) reads back correctly. Each row is reinterpreted by its own field count rather
+    than trusting whatever header is on disk, since old- and new-format rows can be interleaved.
+    Caller must hold _file_lock."""
+    if not LOG_PATH.exists() or LOG_PATH.stat().st_size == 0:
+        return
+
+    with open(LOG_PATH, "r", newline="", encoding="utf-8") as f:
+        reader = csv.reader(f)
+        header = next(reader, None)
+        if header == FIELDNAMES:
+            return
+        rows = list(reader)
+
+    migrated = []
+    for row in rows:
+        names = FIELDNAMES if len(row) == len(FIELDNAMES) else LEGACY_FIELDNAMES
+        values = dict(zip(names, row))
+        migrated.append([
+            values.get("timestamp", ""),
+            values.get("photo_file", ""),
+            values.get("saved_locally", "0"),
+            values.get("discord_enabled", "0"),
+            values.get("discord_success", "0"),
+            values.get("discord_message", ""),
+            values.get("discord_attempts", "0"),
+            values.get("telegram_enabled", "0"),
+            values.get("telegram_success", "0"),
+            values.get("telegram_message", ""),
+            values.get("telegram_attempts", "0"),
+            values.get("resolved_at") or values.get("timestamp", ""),
+        ])
+
+    with open(LOG_PATH, "w", newline="", encoding="utf-8") as f:
+        writer = csv.writer(f)
+        writer.writerow(FIELDNAMES)
+        writer.writerows(migrated)
 
 
 def append_capture(
@@ -49,27 +105,59 @@ def append_capture(
     resolved_at = resolved_at or captured_at
     try:
         LOG_DIR.mkdir(parents=True, exist_ok=True)
-        write_header = not LOG_PATH.exists() or LOG_PATH.stat().st_size == 0
-        with open(LOG_PATH, "a", newline="", encoding="utf-8") as f:
-            writer = csv.writer(f)
-            if write_header:
-                writer.writerow(FIELDNAMES)
-            writer.writerow([
-                captured_at.strftime(TIMESTAMP_FORMAT),
-                photo_file,
-                "1" if saved_locally else "0",
-                "1" if discord_enabled else "0",
-                "1" if discord_success else "0",
-                discord_message,
-                str(discord_attempts),
-                "1" if telegram_enabled else "0",
-                "1" if telegram_success else "0",
-                telegram_message,
-                str(telegram_attempts),
-                resolved_at.strftime(TIMESTAMP_FORMAT),
-            ])
+        with _file_lock:
+            _migrate_header_if_needed()
+            write_header = not LOG_PATH.exists() or LOG_PATH.stat().st_size == 0
+            with open(LOG_PATH, "a", newline="", encoding="utf-8") as f:
+                writer = csv.writer(f)
+                if write_header:
+                    writer.writerow(FIELDNAMES)
+                writer.writerow([
+                    captured_at.strftime(TIMESTAMP_FORMAT),
+                    photo_file,
+                    "1" if saved_locally else "0",
+                    "1" if discord_enabled else "0",
+                    "1" if discord_success else "0",
+                    discord_message,
+                    str(discord_attempts),
+                    "1" if telegram_enabled else "0",
+                    "1" if telegram_success else "0",
+                    telegram_message,
+                    str(telegram_attempts),
+                    resolved_at.strftime(TIMESTAMP_FORMAT),
+                ])
     except OSError as exc:
         print(f"Could not write capture log: {exc}")
+
+
+def delete_entry(photo_file: str) -> bool:
+    """Removes every log row referencing photo_file (normally just one). Returns True if a row was
+    actually removed. Never raises - a logging problem must not crash the setup screen."""
+    if not photo_file:
+        return False
+    try:
+        with _file_lock:
+            if not LOG_PATH.exists():
+                return False
+            _migrate_header_if_needed()
+            with open(LOG_PATH, "r", newline="", encoding="utf-8") as f:
+                reader = csv.reader(f)
+                next(reader, None)  # header, already guaranteed current by the migration above
+                rows = list(reader)
+
+            photo_idx = FIELDNAMES.index("photo_file")
+            kept = [row for row in rows if len(row) <= photo_idx or row[photo_idx] != photo_file]
+            if len(kept) == len(rows):
+                return False
+
+            with open(LOG_PATH, "w", newline="", encoding="utf-8") as f:
+                writer = csv.writer(f)
+                writer.writerow(FIELDNAMES)
+                writer.writerows(kept)
+            return True
+    except OSError as exc:
+        print(f"Could not delete capture log entry: {exc}")
+        return False
 
 
 def read_entries() -> list[dict]:
@@ -108,7 +196,7 @@ def read_entries() -> list[dict]:
     return entries
 
 
-def _classify(entry: dict) -> str:
+def classify_entry(entry: dict) -> str:
     outcomes = []
     if entry["discord_enabled"]:
         outcomes.append(entry["discord_success"])
@@ -143,7 +231,7 @@ def summarize(entries: list[dict]) -> tuple[list[dict], dict]:
 
     for entry in entries:
         bucket = hourly[entry["timestamp"].hour]
-        outcome = _classify(entry)
+        outcome = classify_entry(entry)
         bucket["total"] += 1
         bucket[outcome] += 1
 
@@ -170,3 +258,55 @@ def summarize(entries: list[dict]) -> tuple[list[dict], dict]:
             totals["last"] = timestamp
 
     return hourly, totals
+
+
+# In-memory registry of captures still being sent/retried, keyed by captured_at.isoformat().
+# A capture only gets a captures.csv row once append_capture() runs, which can be up to
+# UPLOAD_RETRY_WINDOW_S after the photo was taken - without this, the Logs tab would have no way
+# to show a photo that's still in flight. Purely in-memory: nothing here needs to (or can) survive
+# a process restart, since a restart kills the retry thread it describes anyway.
+_pending_lock = threading.Lock()
+_pending: dict = {}
+
+
+def register_pending(
+    key: str, *, photo_file: str, captured_at: datetime, saved_locally: bool,
+    discord_enabled: bool, telegram_enabled: bool, deadline_at: datetime,
+) -> None:
+    with _pending_lock:
+        _pending[key] = {
+            "photo_file": photo_file,
+            "captured_at": captured_at,
+            "saved_locally": saved_locally,
+            "discord_enabled": discord_enabled,
+            "discord_attempts": 0,
+            "discord_success": False,
+            "discord_message": "",
+            "telegram_enabled": telegram_enabled,
+            "telegram_attempts": 0,
+            "telegram_success": False,
+            "telegram_message": "",
+            "deadline_at": deadline_at,
+        }
+
+
+def update_pending(key: str, destination: str, *, attempts: int, success: bool, message: str) -> None:
+    with _pending_lock:
+        entry = _pending.get(key)
+        if entry is not None:
+            entry[f"{destination}_attempts"] = attempts
+            entry[f"{destination}_success"] = success
+            entry[f"{destination}_message"] = message
+
+
+def resolve_pending(key: str) -> None:
+    with _pending_lock:
+        _pending.pop(key, None)
+
+
+def list_pending() -> list[dict]:
+    """Snapshot of captures still within their retry window, most recently captured first."""
+    with _pending_lock:
+        entries = [dict(entry, key=key) for key, entry in _pending.items()]
+    entries.sort(key=lambda entry: entry["captured_at"], reverse=True)
+    return entries
