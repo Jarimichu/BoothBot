@@ -95,7 +95,10 @@ class BoothApp:
         return scaled
 
     def run(self):
+        """Returns True if the user pressed the quit key (setup should reopen), False if the window
+        was closed outright (e.g. Alt+F4), meaning the whole program should exit."""
         running = True
+        return_to_setup = False
         try:
             while running:
                 for event in pygame.event.get():
@@ -104,6 +107,7 @@ class BoothApp:
                     elif event.type == pygame.KEYDOWN:
                         if event.key == self.quit_key:
                             running = False
+                            return_to_setup = True
                         elif event.key == self.capture_key and self.state == START:
                             self.state = LIVE
                             self.state_entered_at = time.time()
@@ -116,6 +120,7 @@ class BoothApp:
         finally:
             self.camera.release()
             pygame.quit()
+        return return_to_setup
 
     def _start_countdown(self):
         self.state = COUNTDOWN
@@ -295,22 +300,28 @@ def main():
     from .setup_ui import SetupWindow
 
     raw_config = load_config_dict()
-    setup = SetupWindow(raw_config)
-    result = setup.run()
-    if result is None:
-        print("Setup cancelled - exiting.")
-        return
 
-    save_config_dict(result)
-    config = Config(result)
+    while True:
+        setup = SetupWindow(raw_config)
+        result = setup.run()
+        if result is None:
+            print("Setup cancelled - exiting.")
+            return
 
-    try:
-        app = BoothApp(config)
-    except CameraError as exc:
-        print(f"Fatal: {exc}")
-        _show_fatal_error(str(exc))
-        return
-    app.run()
+        if setup.remember_settings:
+            save_config_dict(result)
+        raw_config = result
+        config = Config(result)
+
+        try:
+            app = BoothApp(config)
+        except CameraError as exc:
+            print(f"Fatal: {exc}")
+            _show_fatal_error(str(exc))
+            return
+
+        if not app.run():
+            return
 
 
 def _show_fatal_error(message: str):

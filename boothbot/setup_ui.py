@@ -9,12 +9,17 @@ from .camera import Camera, CameraError
 
 PREVIEW_SIZE = (480, 360)
 PREVIEW_INTERVAL_MS = 33
+CAMERA_INDEX_CHOICES = [str(i) for i in range(6)]
+COUNTDOWN_CHOICES = [3, 4, 5, 6, 7, 8, 10]
+PHOTO_REVIEW_CHOICES = [3, 4, 5, 6, 8, 10, 15]
+RESULT_DISPLAY_CHOICES = [2, 3, 4, 5, 6, 8, 10]
 
 
 class SetupWindow:
     def __init__(self, config_data: dict):
         self.initial_config = config_data
         self.result = None
+        self.remember_settings = True
         self.camera = None
 
         self.root = tk.Tk()
@@ -28,6 +33,7 @@ class SetupWindow:
         self.photo_review_var = tk.IntVar(value=config_data.get("photo_review_seconds", 5))
         self.post_capture_var = tk.IntVar(value=config_data.get("post_capture_display_seconds", 4))
         self.fullscreen_var = tk.BooleanVar(value=config_data.get("fullscreen", True))
+        self.remember_settings_var = tk.BooleanVar(value=True)
         self.start_message_var = tk.StringVar(
             value=config_data.get("start_message", "Press button to start photobooth!")
         )
@@ -39,7 +45,7 @@ class SetupWindow:
         self.review_message_bottom_var = tk.StringVar(
             value=config_data.get("review_message_bottom", "Please see your photo on the Telegram channel")
         )
-        self.scale_review_photo_var = tk.BooleanVar(value=config_data.get("scale_review_photo", False))
+        self.scale_review_photo_var = tk.BooleanVar(value=config_data.get("scale_review_photo", True))
         self.capture_key_var = tk.StringVar(value=config_data.get("capture_key", "space"))
         self.quit_key_var = tk.StringVar(value=config_data.get("quit_key", "escape"))
         self.discord_webhook_var = tk.StringVar(value=config_data.get("discord_webhook_url", ""))
@@ -58,8 +64,6 @@ class SetupWindow:
 
         left = ttk.Frame(outer)
         left.grid(row=0, column=0, sticky="n", padx=(0, 24))
-        right = ttk.Frame(outer)
-        right.grid(row=0, column=1, sticky="n")
 
         # --- Left: camera preview ---
         ttk.Label(left, text="Camera Preview", font=("Segoe UI", 12, "bold")).grid(row=0, column=0, sticky="w")
@@ -71,63 +75,62 @@ class SetupWindow:
         camera_row = ttk.Frame(left)
         camera_row.grid(row=2, column=0, sticky="ew")
         ttk.Label(camera_row, text="Camera index:").pack(side="left")
-        camera_spin = ttk.Spinbox(camera_row, from_=0, to=9, width=4, textvariable=self.camera_index_var)
-        camera_spin.pack(side="left", padx=(6, 6))
+        camera_combo = ttk.Combobox(
+            camera_row, textvariable=self.camera_index_var, values=CAMERA_INDEX_CHOICES, width=4
+        )
+        camera_combo.pack(side="left", padx=(6, 6))
+        camera_combo.bind("<<ComboboxSelected>>", lambda event: self._on_refresh_camera())
         ttk.Button(camera_row, text="Refresh", command=self._on_refresh_camera).pack(side="left")
 
         ttk.Label(left, textvariable=self.camera_status_var, foreground="#555").grid(
             row=3, column=0, sticky="w", pady=(4, 0)
         )
 
-        # --- Right: settings form ---
+        # --- Right: tabbed settings ---
+        notebook = ttk.Notebook(outer)
+        notebook.grid(row=0, column=1, sticky="n")
+
+        general_tab = self._add_tab(notebook, "General")
         row = 0
-        ttk.Label(right, text="Start Page", font=("Segoe UI", 12, "bold")).grid(
-            row=row, column=0, columnspan=2, sticky="w"
+        row = self._add_key_capture(general_tab, row, "Capture button key:", self.capture_key_var)
+        row = self._add_key_capture(general_tab, row, "Quit key:", self.quit_key_var)
+        ttk.Checkbutton(general_tab, text="Fullscreen", variable=self.fullscreen_var).grid(
+            row=row, column=0, columnspan=2, sticky="w", pady=(4, 4)
         )
         row += 1
-
-        row = self._add_entry(right, row, "Start page message:", self.start_message_var, width=36)
-        row = self._add_logo_picker(right, row, "Start page logo:")
-
-        ttk.Separator(right, orient="horizontal").grid(row=row, column=0, columnspan=2, sticky="ew", pady=8)
-        row += 1
-
-        ttk.Label(right, text="Booth Settings", font=("Segoe UI", 12, "bold")).grid(
-            row=row, column=0, columnspan=2, sticky="w"
-        )
-        row += 1
-
-        row = self._add_spinbox(right, row, "Countdown (seconds):", self.countdown_var, 1, 30)
-        row = self._add_spinbox(right, row, "Photo review (seconds):", self.photo_review_var, 1, 60)
-        row = self._add_entry(right, row, "Review message (top):", self.review_message_top_var, width=36)
-        row = self._add_entry(right, row, "Review message (bottom):", self.review_message_bottom_var, width=36)
-
         ttk.Checkbutton(
-            right, text="Scale review photo to 75% (room for messages above/below)", variable=self.scale_review_photo_var
+            general_tab, text="Remember these settings for next time", variable=self.remember_settings_var
         ).grid(row=row, column=0, columnspan=2, sticky="w", pady=(2, 4))
         row += 1
 
-        row = self._add_spinbox(right, row, "Result display (seconds):", self.post_capture_var, 1, 30)
-        row = self._add_entry(right, row, "Live view message:", self.prompt_message_var, width=36)
-        row = self._add_key_capture(right, row, "Capture button key:", self.capture_key_var)
-        row = self._add_key_capture(right, row, "Quit key:", self.quit_key_var)
+        start_tab = self._add_tab(notebook, "Start Page")
+        row = 0
+        row = self._add_entry(start_tab, row, "Start page message:", self.start_message_var, width=36)
+        row = self._add_logo_picker(start_tab, row, "Start page logo:")
 
-        ttk.Checkbutton(right, text="Fullscreen", variable=self.fullscreen_var).grid(
-            row=row, column=0, columnspan=2, sticky="w", pady=(4, 8)
-        )
+        live_tab = self._add_tab(notebook, "Live View")
+        row = 0
+        row = self._add_entry(live_tab, row, "Live view message:", self.prompt_message_var, width=36)
+        row = self._add_combobox(live_tab, row, "Countdown (seconds):", self.countdown_var, COUNTDOWN_CHOICES)
+
+        post_view_tab = self._add_tab(notebook, "Post View")
+        row = 0
+        row = self._add_combobox(post_view_tab, row, "Photo review (seconds):", self.photo_review_var, PHOTO_REVIEW_CHOICES)
+        row = self._add_entry(post_view_tab, row, "Review message (top):", self.review_message_top_var, width=36)
+        row = self._add_entry(post_view_tab, row, "Review message (bottom):", self.review_message_bottom_var, width=36)
+        ttk.Checkbutton(
+            post_view_tab,
+            text="Scale review photo to 75% (room for messages above/below)",
+            variable=self.scale_review_photo_var,
+        ).grid(row=row, column=0, columnspan=2, sticky="w", pady=(2, 4))
         row += 1
+        row = self._add_combobox(post_view_tab, row, "Result display (seconds):", self.post_capture_var, RESULT_DISPLAY_CHOICES)
 
-        ttk.Separator(right, orient="horizontal").grid(row=row, column=0, columnspan=2, sticky="ew", pady=8)
-        row += 1
-
-        ttk.Label(right, text="Discord & Telegram", font=("Segoe UI", 12, "bold")).grid(
-            row=row, column=0, columnspan=2, sticky="w"
-        )
-        row += 1
-
-        row = self._add_entry(right, row, "Discord webhook URL:", self.discord_webhook_var, width=36)
-        row = self._add_entry(right, row, "Telegram bot token:", self.telegram_token_var, width=36)
-        row = self._add_entry(right, row, "Telegram chat ID:", self.telegram_chat_id_var, width=36)
+        connections_tab = self._add_tab(notebook, "Discord & Telegram")
+        row = 0
+        row = self._add_entry(connections_tab, row, "Discord webhook URL:", self.discord_webhook_var, width=36)
+        row = self._add_entry(connections_tab, row, "Telegram bot token:", self.telegram_token_var, width=36)
+        row = self._add_entry(connections_tab, row, "Telegram chat ID:", self.telegram_chat_id_var, width=36)
 
         button_row = ttk.Frame(outer)
         button_row.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(16, 0))
@@ -135,9 +138,14 @@ class SetupWindow:
         ttk.Button(button_row, text="Quit", command=self._on_quit).pack(side="right", padx=(8, 0))
         ttk.Button(button_row, text="Start Photobooth", command=self._on_start).pack(side="right")
 
-    def _add_spinbox(self, parent, row, label, var, from_, to):
+    def _add_tab(self, notebook, title):
+        tab = ttk.Frame(notebook, padding=12)
+        notebook.add(tab, text=title)
+        return tab
+
+    def _add_combobox(self, parent, row, label, var, values, width=8):
         ttk.Label(parent, text=label).grid(row=row, column=0, sticky="w", pady=3)
-        ttk.Spinbox(parent, from_=from_, to=to, width=6, textvariable=var).grid(row=row, column=1, sticky="w")
+        ttk.Combobox(parent, textvariable=var, values=values, width=width).grid(row=row, column=1, sticky="w")
         return row + 1
 
     def _add_entry(self, parent, row, label, var, width=24):
@@ -238,6 +246,7 @@ class SetupWindow:
             "telegram_bot_token": self.telegram_token_var.get().strip(),
             "telegram_chat_id": self.telegram_chat_id_var.get().strip(),
         }
+        self.remember_settings = self.remember_settings_var.get()
         self._cleanup()
         self.root.destroy()
 
