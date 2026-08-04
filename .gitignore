@@ -1,6 +1,5 @@
 config.json
-photos/*.jpg
-photos/*.png
+photos/
 __pycache__/
 *.pyc
 .venv/
