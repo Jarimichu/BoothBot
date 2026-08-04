@@ -2,6 +2,15 @@
 
 All notable changes to BoothBot are documented in this file.
 
+## [1.0.2] - 2026-08-04
+
+### Added
+- Photo review phase: the captured photo is now shown by itself for a configurable number of seconds right after the flash, with the Discord/Telegram upload happening in the background at the same time instead of after.
+- Configurable review message, split into separate top and bottom lines (e.g. "Thanks for coming to the con!" / "Please see your photo on the Telegram channel"), rendered smaller than the other on-screen text so the photo stays the focus.
+
+### Changed
+- Packaged `.exe` now builds directly into the project root (`pyinstaller BoothBot.spec --distpath .`) instead of PyInstaller's default `dist/` subfolder.
+
 ## [1.0.1] - 2026-08-04
 
 ### Added
