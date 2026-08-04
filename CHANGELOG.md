@@ -2,6 +2,17 @@
 
 All notable changes to BoothBot are documented in this file.
 
+## [1.5.1] - 2026-08-04
+
+### Changed
+- Removed the "Sending your photo..."/"Thank you!" screens entirely - the photo review is now the last thing guests see, and the upload happens silently in the background afterward. A destination that fails is retried automatically (only that destination, never one that already succeeded, so guests are never double-posted) roughly once a minute for up to 15 minutes before giving up. This also fixes the case where an intermittent network issue made a genuinely successful send look like a failure to guests; that status remains fully visible to the operator via the Logs tab and the remote monitor.
+- The capture log is now written only once a photo's outcome is fully resolved (success, final failure, or the 15-minute retry window elapsing) instead of moments after the shutter, so it always reflects the true final result. Each entry is more verbose too: per-destination status message and attempt count, plus both the captured and resolved timestamps.
+- "Show the monitor URL on the start page" now defaults to off - the setup screen remains the normal way to find it, so guests at the booth don't see it unless you turn it on.
+- Removed the "Result display (seconds)" setting from the Post View tab, since there's no longer a result screen for it to time.
+
+### Removed
+- `config.example.json` - no longer needed, since a missing `config.json` was always able to fall back to the built-in defaults anyway. `BoothBot.spec` no longer bundles it.
+
 ## [1.5.0] - 2026-08-04
 
 ### Added

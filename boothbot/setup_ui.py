@@ -19,7 +19,6 @@ TEST_POLL_INTERVAL_MS = 200
 CAMERA_INDEX_CHOICES = [str(i) for i in range(6)]
 COUNTDOWN_CHOICES = [3, 4, 5, 6, 7, 8, 10]
 PHOTO_REVIEW_CHOICES = [3, 4, 5, 6, 8, 10, 15]
-RESULT_DISPLAY_CHOICES = [2, 3, 4, 5, 6, 8, 10]
 
 STATUS_COLOR_IDLE = "#555555"
 STATUS_COLOR_SUCCESS = "#1E8E3C"
@@ -60,7 +59,6 @@ class SetupWindow:
         self.camera_status_var = tk.StringVar(value="")
         self.countdown_var = tk.IntVar(value=config_data.get("countdown_seconds", 5))
         self.photo_review_var = tk.IntVar(value=config_data.get("photo_review_seconds", 5))
-        self.post_capture_var = tk.IntVar(value=config_data.get("post_capture_display_seconds", 4))
         self.fullscreen_var = tk.BooleanVar(value=config_data.get("fullscreen", True))
         self.remember_settings_var = tk.BooleanVar(value=True)
         self.monitor_enabled_var = tk.BooleanVar(value=config_data.get("monitor_enabled", True))
@@ -187,7 +185,6 @@ class SetupWindow:
             variable=self.scale_review_photo_var,
         ).grid(row=row, column=0, columnspan=2, sticky="w", pady=(2, 4))
         row += 1
-        row = self._add_combobox(post_view_tab, row, "Result display (seconds):", self.post_capture_var, RESULT_DISPLAY_CHOICES)
 
         storage_tab = self._add_tab(notebook, "Photo Storage")
         row = 0
@@ -547,7 +544,6 @@ class SetupWindow:
             "camera_index": self.camera_index_var.get(),
             "countdown_seconds": self.countdown_var.get(),
             "photo_review_seconds": self.photo_review_var.get(),
-            "post_capture_display_seconds": self.post_capture_var.get(),
             "fullscreen": self.fullscreen_var.get(),
             "start_message": self.start_message_var.get().strip(),
             "start_logo_path": self.start_logo_path_var.get().strip(),
