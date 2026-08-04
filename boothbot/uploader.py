@@ -27,21 +27,27 @@ def _post(destination, url, ok_statuses, success_message="sent", **kwargs) -> Up
 
 
 def post_to_discord(photo_path, webhook_url: str) -> UploadResult:
-    with open(photo_path, "rb") as f:
-        return _post(
-            "discord", webhook_url, (200, 204),
-            files={"file": (photo_path.name, f, "image/jpeg")},
-        )
+    try:
+        with open(photo_path, "rb") as f:
+            return _post(
+                "discord", webhook_url, (200, 204),
+                files={"file": (photo_path.name, f, "image/jpeg")},
+            )
+    except OSError as exc:
+        return UploadResult("discord", False, f"Discord: could not read photo file - {exc}")
 
 
 def post_to_telegram(photo_path, bot_token: str, chat_id: str) -> UploadResult:
     url = f"https://api.telegram.org/bot{bot_token}/sendPhoto"
-    with open(photo_path, "rb") as f:
-        return _post(
-            "telegram", url, (200,),
-            data={"chat_id": chat_id},
-            files={"photo": (photo_path.name, f, "image/jpeg")},
-        )
+    try:
+        with open(photo_path, "rb") as f:
+            return _post(
+                "telegram", url, (200,),
+                data={"chat_id": chat_id},
+                files={"photo": (photo_path.name, f, "image/jpeg")},
+            )
+    except OSError as exc:
+        return UploadResult("telegram", False, f"Telegram: could not read photo file - {exc}")
 
 
 def test_discord(webhook_url: str) -> UploadResult:

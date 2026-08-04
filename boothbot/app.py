@@ -1,5 +1,4 @@
 """Fullscreen kiosk photobooth: start page -> live preview -> countdown -> capture -> upload."""
-import queue
 import threading
 import time
 from datetime import datetime
@@ -16,18 +15,16 @@ LIVE = "live"
 COUNTDOWN = "countdown"
 FLASH = "flash"
 REVIEW = "review"
-UPLOADING = "uploading"
-RESULT = "result"
 
 WHITE = (255, 255, 255)
 BLACK = (0, 0, 0)
-GREEN = (80, 220, 100)
-RED = (230, 70, 70)
 MONITOR_URL_COLOR = (90, 90, 90)
 FLASH_DURATION_S = 0.15
 LIVE_IDLE_TIMEOUT_S = 30
 SCALED_REVIEW_PHOTO_RATIO = 0.75
 CAMERA_HEALTH_INTERVAL_S = 5
+UPLOAD_RETRY_WINDOW_S = 15 * 60
+UPLOAD_RETRY_INTERVAL_S = 60
 
 
 def frame_to_surface(frame_rgb):
@@ -48,7 +45,6 @@ def scale_to_fit(surface, target_size):
 class BoothApp:
     def __init__(self, config):
         self.config = config
-        self.upload_queue = queue.Queue()
 
         pygame.init()
         pygame.display.set_caption(f"BoothBot v{__version__}")
@@ -80,14 +76,16 @@ class BoothApp:
         self.state_entered_at = time.time()
         self.countdown_start = None
         self.captured_frame = None
-        self.capture_photo_path = None
-        self.capture_saved_locally = False
-        self.result_lines = []
-        self.result_success = False
 
-        # Live status, read by the monitor server's handler thread via _status_snapshot().
-        # Each field is a single atomically-assigned attribute (never split across two reads)
-        # so the handler thread can never observe a torn/inconsistent pair.
+        # Live status, read by the monitor server's handler thread via _status_snapshot(), and
+        # written by both the main thread (state/camera/last_capture_at) and potentially several
+        # concurrent background retry threads (failure counters/last_error/last_success_at) - up
+        # to UPLOAD_RETRY_WINDOW_S/15 minutes can elapse between a capture and its outcome being
+        # known, so more than one capture's retry loop can be in flight at once. _status_lock
+        # guards every read-modify-write of the failure-tracking fields; everything else is a
+        # single atomically-assigned attribute (never split across two reads) so the handler
+        # thread can never observe a torn/inconsistent pair even without locking.
+        self._status_lock = threading.Lock()
         self.session_started_at = datetime.now()
         self.camera_ok = None
         self.camera_checked_at = None
@@ -181,19 +179,10 @@ class BoothApp:
                 self.state_entered_at = now
 
         elif self.state == REVIEW:
+            # The upload (started back at capture time) keeps running in the background regardless
+            # of what's on screen - there's no "wait for it" state here anymore. It resolves (and
+            # gets logged) whenever it resolves, up to UPLOAD_RETRY_WINDOW_S later.
             if now - self.state_entered_at >= self.config.photo_review_seconds:
-                self._advance_after_review()
-
-        elif self.state == UPLOADING:
-            try:
-                results = self.upload_queue.get_nowait()
-            except queue.Empty:
-                pass
-            else:
-                self._finish_upload(results)
-
-        elif self.state == RESULT:
-            if now - self.state_entered_at >= self.config.post_capture_display_seconds:
                 self.state = START
                 self.state_entered_at = now
 
@@ -208,99 +197,137 @@ class BoothApp:
         frame = self._read_camera_frame()
         if frame is not None:
             self.captured_frame = frame
-        self.last_capture_at = datetime.now()
+        captured_at = datetime.now()
+        self.last_capture_at = captured_at
+        self.captures_this_session += 1  # only ever written from the main thread - no lock needed
         self.state = FLASH
         self.state_entered_at = time.time()
-        self._start_upload()
+        self._start_upload(captured_at)
 
-    def _start_upload(self):
-        """Kicks off the upload in the background so it overlaps with the photo review, not after it.
-        The photo is always saved locally first, regardless of which (if any) online destinations are enabled."""
+    def _start_upload(self, captured_at):
+        """Saves the photo locally (always, synchronously) and hands off to a background thread that
+        posts to whichever destinations are enabled - retrying only the ones still failing, for up to
+        UPLOAD_RETRY_WINDOW_S, so a slow/flaky network doesn't produce a false failure in the log.
+        Fully detached from the guest-facing state machine: nothing here blocks REVIEW's return to START."""
         if self.captured_frame is None:
-            self.capture_photo_path = None
-            self.capture_saved_locally = False
-            self.upload_queue.put([uploader.UploadResult("local", False, "Capture failed - no frame from camera")])
+            self._finalize_capture(
+                photo_path=None, captured_at=captured_at, saved_locally=False,
+                results=[uploader.UploadResult("local", False, "Capture failed - no frame from camera")],
+                attempts={},
+            )
             return
 
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        timestamp = captured_at.strftime("%Y%m%d_%H%M%S")
         photo_path = self.config.photos_dir / f"booth_{timestamp}.jpg"
         try:
             saved_ok = self.camera.save_frame(self.captured_frame, photo_path)
         except Exception as exc:
             print(f"Could not save photo locally: {exc}")
             saved_ok = False
-        self.capture_photo_path = photo_path
-        self.capture_saved_locally = saved_ok
 
-        if not (self.config.discord_enabled or self.config.telegram_enabled):
-            message = "Saved locally" if saved_ok else "Could not save photo locally"
-            self.upload_queue.put([uploader.UploadResult("local", saved_ok, message)])
-            return
+        config = self.config  # a Config instance is never mutated after BoothApp starts - safe to share
+        threading.Thread(
+            target=self._upload_with_retries,
+            args=(photo_path, captured_at, saved_ok, config),
+            daemon=True,
+        ).start()
 
-        def worker():
-            results = uploader.post_photo(photo_path, self.config)
-            self.upload_queue.put(results)
+    def _upload_with_retries(self, photo_path, captured_at, saved_locally, config):
+        """Runs entirely on a background thread. Retries only the destinations that haven't
+        succeeded yet (never a destination that already posted - that would duplicate it),
+        checking back every UPLOAD_RETRY_INTERVAL_S until everything succeeds or
+        UPLOAD_RETRY_WINDOW_S has passed since the photo was taken."""
+        pending = {}
+        if config.discord_enabled:
+            pending["discord"] = None
+        if config.telegram_enabled:
+            pending["telegram"] = None
 
-        threading.Thread(target=worker, daemon=True).start()
+        attempts = {name: 0 for name in pending}
+        last_result = {}
+        deadline = time.time() + UPLOAD_RETRY_WINDOW_S
 
-    def _advance_after_review(self):
-        """Called once the photo review timer expires: skips straight to the result if the upload already
-        finished in the background, otherwise shows the uploading spinner until it does."""
-        try:
-            results = self.upload_queue.get_nowait()
-        except queue.Empty:
-            self.state = UPLOADING
-            self.state_entered_at = time.time()
-        else:
-            self._finish_upload(results)
+        while pending and time.time() < deadline:
+            for name in list(pending.keys()):
+                attempts[name] += 1
+                try:
+                    if name == "discord":
+                        result = uploader.post_to_discord(photo_path, config.discord_webhook_url)
+                    else:
+                        result = uploader.post_to_telegram(photo_path, config.telegram_bot_token, config.telegram_chat_id)
+                except Exception as exc:
+                    # This loop runs unattended for up to UPLOAD_RETRY_WINDOW_S with no supervision -
+                    # an unexpected exception here must never kill the thread, or this capture would
+                    # never get logged at all (worse than a false-negative failure entry).
+                    result = uploader.UploadResult(name, False, f"{name}: unexpected error - {exc}")
+                last_result[name] = result
+                if result.success:
+                    del pending[name]
+            if pending:
+                remaining = deadline - time.time()
+                if remaining <= 0:
+                    break
+                time.sleep(min(UPLOAD_RETRY_INTERVAL_S, remaining))
 
-    def _finish_upload(self, results):
-        """Every finished capture funnels through here - the one place the capture log is written."""
-        self.result_lines = [result.message for result in results]
-        self.result_success = any(result.success for result in results)
-        self._log_capture(results)
-        self._update_live_status(results)
-        self.state = RESULT
-        self.state_entered_at = time.time()
+        results = list(last_result.values())
+        if not results:
+            message = "Saved locally" if saved_locally else "Could not save photo locally"
+            results = [uploader.UploadResult("local", saved_locally, message)]
 
-    def _update_live_status(self, results):
-        self.captures_this_session += 1
-        all_ok = self.capture_saved_locally and all(result.success for result in results)
-        if all_ok:
-            self.last_success_at = datetime.now()
-            self.consecutive_failures = 0
-        else:
-            self.failures_this_session += 1
-            self.consecutive_failures += 1
-            failing = [result.message for result in results if not result.success]
-            if not self.capture_saved_locally:
-                failing.insert(0, "Local save failed")
-            self.last_error = (datetime.now(), "; ".join(failing) if failing else "Unknown error")
+        self._finalize_capture(photo_path, captured_at, saved_locally, results, attempts)
 
-    def _log_capture(self, results):
-        by_destination = {result.destination: result.success for result in results}
+    def _finalize_capture(self, photo_path, captured_at, saved_locally, results, attempts):
+        """The one place a capture's outcome is fully known - writes the capture log and updates
+        live status. May run on the main thread (a failed local save short-circuits here directly)
+        or on a background retry thread, possibly minutes after the photo was taken; several of
+        these can be in flight concurrently if photos are taken close together, so the
+        failure-tracking fields are updated under _status_lock."""
+        by_destination = {result.destination: result for result in results}
+        discord_result = by_destination.get("discord")
+        telegram_result = by_destination.get("telegram")
+        resolved_at = datetime.now()
+
         capture_log.append_capture(
-            photo_file=self.capture_photo_path.name if self.capture_photo_path else "",
-            saved_locally=self.capture_saved_locally,
-            discord_enabled=self.config.discord_enabled,
-            discord_success=by_destination.get("discord", False),
-            telegram_enabled=self.config.telegram_enabled,
-            telegram_success=by_destination.get("telegram", False),
+            photo_file=photo_path.name if photo_path else "",
+            saved_locally=saved_locally,
+            discord_enabled=discord_result is not None,
+            discord_success=discord_result.success if discord_result else False,
+            discord_message=discord_result.message if discord_result else "",
+            discord_attempts=attempts.get("discord", 0),
+            telegram_enabled=telegram_result is not None,
+            telegram_success=telegram_result.success if telegram_result else False,
+            telegram_message=telegram_result.message if telegram_result else "",
+            telegram_attempts=attempts.get("telegram", 0),
+            captured_at=captured_at,
+            resolved_at=resolved_at,
         )
+
+        with self._status_lock:
+            all_ok = saved_locally and all(result.success for result in results)
+            if all_ok:
+                self.last_success_at = resolved_at
+                self.consecutive_failures = 0
+            else:
+                self.failures_this_session += 1
+                self.consecutive_failures += 1
+                failing = [result.message for result in results if not result.success]
+                if not saved_locally:
+                    failing.insert(0, "Local save failed")
+                self.last_error = (resolved_at, "; ".join(failing) if failing else "Unknown error")
 
     def _draw(self):
         self.screen.fill(BLACK)
 
         if self.state == START:
             frame = None
-        elif self.state in (FLASH, REVIEW, UPLOADING, RESULT):
+        elif self.state in (FLASH, REVIEW):
             frame = self.captured_frame
         else:
             frame = self._read_camera_frame()
 
         if frame is not None:
             surface = frame_to_surface(frame)
-            if self.config.scale_review_photo and self.state in (REVIEW, UPLOADING, RESULT):
+            if self.config.scale_review_photo and self.state == REVIEW:
                 box_w = int(self.screen_size[0] * SCALED_REVIEW_PHOTO_RATIO)
                 box_h = int(self.screen_size[1] * SCALED_REVIEW_PHOTO_RATIO)
             else:
@@ -333,25 +360,13 @@ class BoothApp:
             self.screen.fill(WHITE)
 
         elif self.state == REVIEW:
+            # Deliberately the last thing guests see - no "Sending..."/"Thank you!" stage after this.
+            # The upload (already running in the background) resolves silently; its outcome is only
+            # visible to the operator via the Logs tab and remote monitor, not on this screen.
             self._draw_wrapped_centered_text(self.config.review_message_top, self.font_small, WHITE, y_ratio=0.08, shadow=True)
             self._draw_wrapped_centered_text(
                 self.config.review_message_bottom, self.font_small, WHITE, y_ratio=0.92, shadow=True
             )
-
-        elif self.state == UPLOADING:
-            self._draw_centered_text("Sending your photo...", self.font_med, WHITE, y_ratio=0.9, shadow=True)
-
-        elif self.state == RESULT:
-            color = GREEN if self.result_success else RED
-            if not self.result_success:
-                headline = "Something went wrong"
-            elif self.config.discord_enabled or self.config.telegram_enabled:
-                headline = "Sent!"
-            else:
-                headline = "Saved!"
-            self._draw_centered_text(headline, self.font_med, color, y_ratio=0.85, shadow=True)
-            for i, line in enumerate(self.result_lines):
-                self._draw_centered_text(line, self.font_small, WHITE, y_ratio=0.93 + i * 0.03, shadow=True)
 
         pygame.display.flip()
 

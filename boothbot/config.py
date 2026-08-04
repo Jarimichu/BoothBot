@@ -21,7 +21,6 @@ DEFAULTS = {
     "fullscreen": True,
     "photos_dir": "photos",
     "photo_review_seconds": 5,
-    "post_capture_display_seconds": 4,
     "start_message": "Press button to start photobooth!",
     "start_logo_path": "",
     "prompt_message": "Press the button to take a photo!",

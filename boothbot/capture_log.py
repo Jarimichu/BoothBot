@@ -13,8 +13,13 @@ FIELDNAMES = [
     "saved_locally",
     "discord_enabled",
     "discord_success",
+    "discord_message",
+    "discord_attempts",
     "telegram_enabled",
     "telegram_success",
+    "telegram_message",
+    "telegram_attempts",
+    "resolved_at",
 ]
 
 TIMESTAMP_FORMAT = "%Y-%m-%d %H:%M:%S"
@@ -30,8 +35,18 @@ def append_capture(
     discord_success: bool,
     telegram_enabled: bool,
     telegram_success: bool,
+    discord_message: str = "",
+    discord_attempts: int = 0,
+    telegram_message: str = "",
+    telegram_attempts: int = 0,
+    captured_at: "datetime | None" = None,
+    resolved_at: "datetime | None" = None,
 ) -> None:
-    """Appends one row to the capture log. Never raises - a logging failure must not crash the booth."""
+    """Appends one row to the capture log, once a capture's outcome is fully resolved (which may be up
+    to several minutes after the photo was taken, if retries were needed). Never raises - a logging
+    failure must not crash the booth."""
+    captured_at = captured_at or datetime.now()
+    resolved_at = resolved_at or captured_at
     try:
         LOG_DIR.mkdir(parents=True, exist_ok=True)
         write_header = not LOG_PATH.exists() or LOG_PATH.stat().st_size == 0
@@ -40,13 +55,18 @@ def append_capture(
             if write_header:
                 writer.writerow(FIELDNAMES)
             writer.writerow([
-                datetime.now().strftime(TIMESTAMP_FORMAT),
+                captured_at.strftime(TIMESTAMP_FORMAT),
                 photo_file,
                 "1" if saved_locally else "0",
                 "1" if discord_enabled else "0",
                 "1" if discord_success else "0",
+                discord_message,
+                str(discord_attempts),
                 "1" if telegram_enabled else "0",
                 "1" if telegram_success else "0",
+                telegram_message,
+                str(telegram_attempts),
+                resolved_at.strftime(TIMESTAMP_FORMAT),
             ])
     except OSError as exc:
         print(f"Could not write capture log: {exc}")
@@ -63,14 +83,22 @@ def read_entries() -> list[dict]:
             reader = csv.DictReader(f)
             for row in reader:
                 try:
+                    captured_at = datetime.fromisoformat(row["timestamp"])
+                    resolved_raw = row.get("resolved_at") or ""
                     entries.append({
-                        "timestamp": datetime.fromisoformat(row["timestamp"]),
+                        "timestamp": captured_at,
                         "photo_file": row.get("photo_file", ""),
                         "saved_locally": row.get("saved_locally") == "1",
                         "discord_enabled": row.get("discord_enabled") == "1",
                         "discord_success": row.get("discord_success") == "1",
+                        "discord_message": row.get("discord_message") or "",
+                        "discord_attempts": int(row.get("discord_attempts") or 0),
                         "telegram_enabled": row.get("telegram_enabled") == "1",
                         "telegram_success": row.get("telegram_success") == "1",
+                        "telegram_message": row.get("telegram_message") or "",
+                        "telegram_attempts": int(row.get("telegram_attempts") or 0),
+                        # Older rows (before verbose logging) have no resolved_at - fall back to capture time.
+                        "resolved_at": datetime.fromisoformat(resolved_raw) if resolved_raw else captured_at,
                     })
                 except (ValueError, TypeError, KeyError):
                     continue
