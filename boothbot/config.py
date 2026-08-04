@@ -26,6 +26,8 @@ DEFAULTS = {
     "photos_dir": "photos",
     "photo_review_seconds": 5,
     "post_capture_display_seconds": 4,
+    "start_message": "Press button to start photobooth!",
+    "start_logo_path": "",
     "prompt_message": "Press the button to take a photo!",
     "review_message_top": "Thanks for coming to the con!",
     "review_message_bottom": "Please see your photo on the Telegram channel",
@@ -42,6 +44,12 @@ class Config:
             setattr(self, key, value)
         self.photos_dir = ROOT_DIR / self.photos_dir
         self.photos_dir.mkdir(parents=True, exist_ok=True)
+
+        if self.start_logo_path:
+            logo_path = Path(self.start_logo_path)
+            if not logo_path.is_absolute():
+                logo_path = ROOT_DIR / logo_path
+            self.start_logo_path = str(logo_path)
 
     @property
     def discord_enabled(self) -> bool:

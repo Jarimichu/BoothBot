@@ -2,6 +2,15 @@
 
 All notable changes to BoothBot are documented in this file.
 
+## [1.1.0] - 2026-08-04
+
+### Added
+- Start page: a configurable message (default "Press button to start photobooth!") and optional logo image, shown fullscreen before the live camera view. Configurable from a new "Start Page" section in the setup screen, including a Browse/Clear logo file picker.
+- Idle timeout: the live view now automatically returns to the start page after 30 seconds if no photo is taken.
+
+### Changed
+- After a completed photo session (once the result message finishes displaying), the app now returns to the start page instead of the live view.
+
 ## [1.0.2] - 2026-08-04
 
 ### Added

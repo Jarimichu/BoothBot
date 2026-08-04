@@ -1,5 +1,5 @@
 # BoothBot
-**Version 1.0.2** ([changelog](CHANGELOG.md))
+**Version 1.1.0** ([changelog](CHANGELOG.md))
 
 Button-triggered photobooth for events - snaps a photo from a webcam after a countdown and auto-posts it to Telegram/Discord.
 
@@ -17,6 +17,7 @@ Button-triggered photobooth for events - snaps a photo from a webcam after a cou
    ```
    A **setup window** opens first with a live camera preview and editable settings:
    - **Camera index**: usually `0`; bump it up (and click Refresh) if the wrong camera shows up in the preview.
+   - **Start page message / logo**: shown fullscreen when the app first launches, before the live camera view - a "Press button to start photobooth!"-style message plus an optional logo image (click Browse to pick a PNG/JPG, Clear to remove it). Pressing the capture button/key here moves on to the live view.
    - **Live view message**: the text shown on the TV before a group presses the button (e.g. "Press the button to take a photo!" or a custom line for your event). Wraps automatically if it's long.
    - **Review message (top) / Review message (bottom)**: smaller text overlaid near the top and bottom of the captured photo while it's shown after the flash, so the photo itself stays the focus (e.g. "Thanks for coming to the con!" / "Please see your photo on the Telegram channel").
    - **Capture button key / Quit key**: click into the field and press the actual button/key you want to use (no need to know its name) - for the USB button, this doubles as a quick test that it registers as a keypress at all.
@@ -32,11 +33,12 @@ Once fullscreen, press `Esc` (or whichever quit key you configured) to return to
 ## How it works
 
 - **Setup screen**: a Tkinter window with a live webcam preview and a form for all booth settings; saves to `config.json` and hands off to the fullscreen view.
-- **Live view**: shows the webcam feed fullscreen with a "press the button" prompt.
+- **Start page**: the first thing shown fullscreen - a configurable message and optional logo, no camera feed. Pressing the button moves to the live view.
+- **Live view**: shows the webcam feed fullscreen with a "press the button" prompt. Returns to the start page automatically after 30 seconds if no photo is taken.
 - **Button press**: starts a countdown (big on-screen numbers).
 - **Capture**: grabs a frame, flashes the screen white, and saves the photo to `photos/`. The upload to Discord/Telegram starts immediately in the background.
 - **Photo review**: displays the captured photo by itself for the configured number of seconds, while the upload happens behind the scenes.
-- **Result**: shows a success/failure message (waiting for the upload to finish first, if it's still in progress) for the configured number of seconds, then returns to the live view.
+- **Result**: shows a success/failure message (waiting for the upload to finish first, if it's still in progress) for the configured number of seconds, then returns to the start page.
 
 ## Packaging as a standalone .exe
 
