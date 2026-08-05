@@ -1,5 +1,5 @@
 # BoothBot
-**Version 1.7.2** ([changelog](CHANGELOG.md))
+**Version 1.7.3** ([changelog](CHANGELOG.md))
 
 Button-triggered photobooth for events - snaps a photo from a webcam after a countdown and auto-posts it to Telegram/Discord.
 
