@@ -2,6 +2,11 @@
 
 All notable changes to BoothBot are documented in this file.
 
+## [1.7.4] - 2026-08-05
+
+### Added
+- A "Text Appearance" section in the General tab lets you set the font family and size used for the start message, live view prompt, and review captions. Previously these were hardcoded, and the review captions in particular used a non-bold weight while every other view was bold - the mismatch is now fixed (defaults match the old start/live look) and fully customizable going forward. The countdown number and the small monitor-URL overlay keep their own sizes, but now follow the chosen font family too.
+
 ## [1.7.3] - 2026-08-04
 
 ### Added
