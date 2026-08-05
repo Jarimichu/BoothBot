@@ -1,0 +1,46 @@
+name: Release
+
+# Builds BoothBot.exe and publishes a GitHub Release whenever a version tag (vX.Y.Z) is pushed.
+# Keeps the manual steps from README.md's packaging section, just automated: bump the version,
+# update CHANGELOG.md, commit, then `git tag vX.Y.Z && git push origin vX.Y.Z`.
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    runs-on: windows-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          pip install pyinstaller
+
+      - name: Verify tag matches boothbot/__init__.py version
+        run: python .github/scripts/check_version.py "${{ github.ref_name }}"
+
+      - name: Build BoothBot.exe
+        run: pyinstaller BoothBot.spec --distpath .
+
+      - name: Extract release notes from CHANGELOG.md
+        run: python .github/scripts/extract_release_notes.py "${{ github.ref_name }}"
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: >
+          gh release create "${{ github.ref_name }}" "BoothBot.exe"
+          --title "BoothBot ${{ github.ref_name }}"
+          --notes-file release_notes.md
