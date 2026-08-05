@@ -21,8 +21,6 @@ CAMERA_INDEX_CHOICES = [str(i) for i in range(6)]
 COUNTDOWN_CHOICES = [3, 4, 5, 6, 7, 8, 10]
 PHOTO_REVIEW_CHOICES = [3, 4, 5, 6, 8, 10, 15]
 TELEGRAM_RETRY_CHOICES = [0, 1, 2, 3, 5, 10]
-FONT_FAMILY_CHOICES = ["Arial", "Segoe UI", "Verdana", "Times New Roman", "Comic Sans MS", "Impact"]
-FONT_SIZE_CHOICES = [32, 40, 48, 56, 64, 72, 80, 96]
 
 STATUS_COLOR_IDLE = "#555555"
 STATUS_COLOR_SUCCESS = "#1E8E3C"
@@ -107,8 +105,6 @@ class SetupWindow:
             value=config_data.get("review_message_bottom", "Please see your photo on the Telegram channel")
         )
         self.scale_review_photo_var = tk.BooleanVar(value=config_data.get("scale_review_photo", True))
-        self.font_family_var = tk.StringVar(value=config_data.get("font_family", "Arial"))
-        self.font_size_message_var = tk.IntVar(value=config_data.get("font_size_message", 64))
         self.capture_key_var = tk.StringVar(value=config_data.get("capture_key", "space"))
         self.quit_key_var = tk.StringVar(value=config_data.get("quit_key", "escape"))
         self.discord_upload_enabled_var = tk.BooleanVar(value=config_data.get("discord_upload_enabled", False))
@@ -169,15 +165,6 @@ class SetupWindow:
             general_tab, text="Remember these settings for next time", variable=self.remember_settings_var
         ).grid(row=row, column=0, columnspan=2, sticky="w", pady=(2, 4))
         row += 1
-
-        ttk.Separator(general_tab, orient="horizontal").grid(row=row, column=0, columnspan=2, sticky="ew", pady=8)
-        row += 1
-        ttk.Label(general_tab, text="Text Appearance", font=("Segoe UI", 11, "bold")).grid(
-            row=row, column=0, columnspan=2, sticky="w"
-        )
-        row += 1
-        row = self._add_combobox(general_tab, row, "Font:", self.font_family_var, FONT_FAMILY_CHOICES)
-        row = self._add_combobox(general_tab, row, "Font size:", self.font_size_message_var, FONT_SIZE_CHOICES)
 
         ttk.Separator(general_tab, orient="horizontal").grid(row=row, column=0, columnspan=2, sticky="ew", pady=8)
         row += 1
@@ -896,8 +883,6 @@ class SetupWindow:
             "review_message_top": self.review_message_top_var.get().strip(),
             "review_message_bottom": self.review_message_bottom_var.get().strip(),
             "scale_review_photo": self.scale_review_photo_var.get(),
-            "font_family": self.font_family_var.get(),
-            "font_size_message": self.font_size_message_var.get(),
             "capture_key": self.capture_key_var.get(),
             "quit_key": self.quit_key_var.get(),
             "discord_upload_enabled": self.discord_upload_enabled_var.get(),
