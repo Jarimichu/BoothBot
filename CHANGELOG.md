@@ -2,6 +2,11 @@
 
 All notable changes to BoothBot are documented in this file.
 
+## [1.7.3] - 2026-08-04
+
+### Added
+- Releases are now built and published automatically: pushing a `vX.Y.Z` git tag triggers a GitHub Actions workflow that builds `BoothBot.exe` on a clean Windows runner and publishes a GitHub Release with the exe attached, using the matching section of this changelog as the release notes. It also checks the tag against `boothbot/__init__.py`'s version first and fails before building if they don't match, to catch a forgotten version bump.
+
 ## [1.7.2] - 2026-08-04
 
 ### Changed
