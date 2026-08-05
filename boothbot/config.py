@@ -27,6 +27,8 @@ DEFAULTS = {
     "review_message_top": "Thanks for coming to the con!",
     "review_message_bottom": "Please see your photo on the Telegram channel",
     "scale_review_photo": True,
+    "font_family": "Arial",
+    "font_size_message": 64,
     "discord_upload_enabled": False,
     "discord_webhook_url": "",
     "telegram_upload_enabled": False,
