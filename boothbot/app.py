@@ -52,9 +52,10 @@ class BoothApp:
         self.screen = pygame.display.set_mode((0, 0) if config.fullscreen else (1280, 720), flags)
         self.screen_size = self.screen.get_size()
 
-        self.font_big = pygame.font.SysFont(config.font_family, 220, bold=True)
-        self.font_message = pygame.font.SysFont(config.font_family, config.font_size_message, bold=True)
-        self.font_tiny = pygame.font.SysFont(config.font_family, 20)
+        self.font_big = pygame.font.SysFont("Arial", 220, bold=True)
+        self.font_med = pygame.font.SysFont("Arial", 64, bold=True)
+        self.font_small = pygame.font.SysFont("Arial", 36)
+        self.font_tiny = pygame.font.SysFont("Arial", 20)
 
         try:
             self.capture_key = pygame.key.key_code(config.capture_key)
@@ -368,12 +369,12 @@ class BoothApp:
                 )
                 self.screen.blit(self.start_logo_surface, logo_rect)
                 message_y_ratio = 0.78
-            self._draw_wrapped_centered_text(self.config.start_message, self.font_message, WHITE, y_ratio=message_y_ratio)
+            self._draw_wrapped_centered_text(self.config.start_message, self.font_med, WHITE, y_ratio=message_y_ratio)
             if self.monitor_url and self.config.monitor_show_url:
                 self._draw_monitor_url()
 
         elif self.state == LIVE:
-            self._draw_wrapped_centered_text(self.config.prompt_message, self.font_message, WHITE, y_ratio=0.88)
+            self._draw_wrapped_centered_text(self.config.prompt_message, self.font_med, WHITE, y_ratio=0.88)
 
         elif self.state == COUNTDOWN:
             remaining = self.config.countdown_seconds - (time.time() - self.countdown_start)
@@ -387,9 +388,9 @@ class BoothApp:
             # Deliberately the last thing guests see - no "Sending..."/"Thank you!" stage after this.
             # The upload (already running in the background) resolves silently; its outcome is only
             # visible to the operator via the Logs tab and remote monitor, not on this screen.
-            self._draw_wrapped_centered_text(self.config.review_message_top, self.font_message, WHITE, y_ratio=0.08, shadow=True)
+            self._draw_wrapped_centered_text(self.config.review_message_top, self.font_small, WHITE, y_ratio=0.08, shadow=True)
             self._draw_wrapped_centered_text(
-                self.config.review_message_bottom, self.font_message, WHITE, y_ratio=0.92, shadow=True
+                self.config.review_message_bottom, self.font_small, WHITE, y_ratio=0.92, shadow=True
             )
 
         pygame.display.flip()
