@@ -1,4 +1,5 @@
 """A Tkinter setup screen (with a live webcam preview) shown before the fullscreen booth view."""
+import ctypes
 import math
 import os
 import queue
@@ -8,9 +9,10 @@ from datetime import datetime
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
+import pygame
 from PIL import Image, ImageTk
 
-from . import __version__, autostart, capture_log, keep_awake, monitor_server, uploader
+from . import __version__, autostart, capture_log, keep_awake, monitor_server, photo_gallery, start_screen, uploader
 from .camera import CameraError, list_camera_names, open_camera_in_background, resolve_camera_index
 from .config import ROOT_DIR
 
@@ -29,6 +31,19 @@ RESOLUTION_CHOICES = [
 COUNTDOWN_CHOICES = [3, 4, 5, 6, 7, 8, 10]
 PHOTO_REVIEW_CHOICES = [3, 4, 5, 6, 8, 10, 15]
 TELEGRAM_RETRY_CHOICES = [0, 1, 2, 3, 5, 10]
+PREVIEW_DELAY_CHOICES = [0, 15, 30, 60, 120, 300, 600]
+
+START_PREVIEW_INTERVAL_MS = 80  # ~12 fps - enough to judge the motion without loading the CPU
+# Drawn at twice PREVIEW_SIZE and scaled down - the start message is only a few pixels tall at
+# preview scale, and comes out much cleaner that way.
+START_PREVIEW_RENDER = (PREVIEW_SIZE[0] * 2, PREVIEW_SIZE[1] * 2)
+WINDOWED_BOOTH_SIZE = (1280, 720)  # BoothApp's window when not fullscreen
+FALLBACK_BOOTH_SIZE = (1920, 1080)
+_DESKTOPVERTRES = 117
+_DESKTOPHORZRES = 118
+
+HIDE_PHOTO_LABEL = "Hide from Start Page"
+SHOW_PHOTO_LABEL = "Show on Start Page"
 
 STATUS_COLOR_IDLE = "#555555"
 STATUS_COLOR_SUCCESS = "#1E8E3C"
@@ -49,6 +64,27 @@ PENDING_ROW_COLOR = "#E6F1FC"
 
 LOG_DETAIL_LIMIT = 40  # newest resolved captures shown, on top of every still-pending one
 LOG_DETAIL_REFRESH_MS = 2000  # only re-scheduled while a capture is still pending, see _refresh_logs
+
+
+def _key_for(choices, label, default):
+    """The setting key for a dropdown label, from (key, label) pairs."""
+    return next((key for key, choice_label in choices if choice_label == label), default)
+
+
+def _booth_screen_size():
+    """The primary display's size in real pixels - what a fullscreen booth draws at. Asked of GDI
+    directly, which answers in physical pixels whatever this process's DPI awareness is."""
+    try:
+        user32 = ctypes.windll.user32
+        gdi32 = ctypes.windll.gdi32
+        hdc = user32.GetDC(None)
+        try:
+            size = (gdi32.GetDeviceCaps(hdc, _DESKTOPHORZRES), gdi32.GetDeviceCaps(hdc, _DESKTOPVERTRES))
+        finally:
+            user32.ReleaseDC(None, hdc)
+    except (AttributeError, OSError):
+        return FALLBACK_BOOTH_SIZE
+    return size if size[0] > 0 and size[1] > 0 else FALLBACK_BOOTH_SIZE
 
 
 class SetupWindow:
@@ -87,13 +123,30 @@ class SetupWindow:
         self._test_buttons = {}
         self._lan_ip = monitor_server.get_lan_ip()
 
+        previews = start_screen.preview_settings(config_data)
+        # (show photos, delay, uploaded only) for _monitor_photos on the monitor's handler thread -
+        # a plain tuple, replaced whole from the main thread as the checkboxes change.
+        self._monitor_photo_rules = (
+            bool(config_data.get("monitor_show_photos", False)), previews.delay_s, previews.uploaded_only
+        )
+        # The Start Page tab's preview - see _update_start_preview.
+        self._start_preview_job = None
+        self._start_preview_screen = None  # rebuilt (None) whenever a setting it shows changes
+        self._start_preview_surface = None
+        self._start_preview_feed = None
+        self._start_preview_tiles = start_screen.TileCache()
+        self._start_preview_logo_path = None
+        self._start_preview_logo = None
+
         # Runs for as long as the setup screen is open, not just the fullscreen booth session -
         # mirrors BoothApp.run()'s own monitor lifecycle, stopped in _cleanup().
         self.monitor = None
         self.monitor_url = None
         if config_data.get("monitor_enabled", True):
             self.monitor = monitor_server.MonitorServer(
-                self._status_snapshot, port=config_data.get("monitor_port", monitor_server.DEFAULT_PORT)
+                self._status_snapshot,
+                photos_provider=self._monitor_photos,
+                port=config_data.get("monitor_port", monitor_server.DEFAULT_PORT),
             )
             self.monitor_url = self.monitor.start()
 
@@ -124,6 +177,16 @@ class SetupWindow:
             value=config_data.get("start_message", "Press button to start photobooth!")
         )
         self.start_logo_path_var = tk.StringVar(value=config_data.get("start_logo_path", ""))
+        self.previews_enabled_var = tk.BooleanVar(value=previews.enabled)
+        self.previews_layout_var = tk.StringVar(value=dict(start_screen.LAYOUTS)[previews.layout])
+        self.previews_motion_var = tk.StringVar(value=dict(start_screen.MOTIONS)[previews.motion])
+        self.previews_count_var = tk.IntVar(value=previews.count)
+        self.previews_frame_var = tk.StringVar(value=dict(start_screen.FRAMES)[previews.frame])
+        self.previews_speed_var = tk.StringVar(value=dict(start_screen.SPEEDS)[previews.speed])
+        self.previews_delay_var = tk.IntVar(value=previews.delay_s)
+        self.previews_delay_choices = sorted(set(PREVIEW_DELAY_CHOICES) | {previews.delay_s})
+        self.previews_uploaded_only_var = tk.BooleanVar(value=previews.uploaded_only)
+        self.monitor_show_photos_var = tk.BooleanVar(value=self._monitor_photo_rules[0])
         self.prompt_message_var = tk.StringVar(value=config_data.get("prompt_message", "Press the button to take a photo!"))
         self.review_message_top_var = tk.StringVar(
             value=config_data.get("review_message_top", "Thanks for coming to the con!")
@@ -258,6 +321,18 @@ class SetupWindow:
             general_tab, text="Show the monitor URL on the start page", variable=self.monitor_show_url_var
         ).grid(row=row, column=0, columnspan=2, sticky="w", pady=(2, 4))
         row += 1
+        ttk.Checkbutton(
+            general_tab, text="Show today's photos on the monitor page", variable=self.monitor_show_photos_var
+        ).grid(row=row, column=0, columnspan=2, sticky="w", pady=(2, 0))
+        row += 1
+        ttk.Label(
+            general_tab,
+            text="Anyone on the network who opens the page can see them. Same photos the start page "
+            "previews may show (see the Start Page tab). Applies right away.",
+            foreground="#888",
+            wraplength=560,
+        ).grid(row=row, column=0, columnspan=2, sticky="w", pady=(0, 4))
+        row += 1
         monitor_url_row = ttk.Frame(general_tab)
         monitor_url_row.grid(row=row, column=0, columnspan=2, sticky="w", pady=(0, 2))
         ttk.Label(monitor_url_row, textvariable=self.monitor_url_var, foreground="#555").pack(side="left")
@@ -269,9 +344,12 @@ class SetupWindow:
         row += 1
 
         start_tab = self._add_tab(notebook, "Start Page")
+        self.settings_notebook = notebook
+        self.start_tab = start_tab
         row = 0
         row = self._add_entry(start_tab, row, "Start page message:", self.start_message_var, width=36)
         row = self._add_logo_picker(start_tab, row, "Start page logo:")
+        row = self._build_previews_section(start_tab, row)
 
         live_tab = self._add_tab(notebook, "Live View")
         row = 0
@@ -369,7 +447,21 @@ class SetupWindow:
         for var in (self.discord_webhook_var, self.telegram_token_var, self.telegram_chat_id_var):
             var.trace_add("write", lambda *_args: self._sync_test_buttons())
         self.monitor_port_var.trace_add("write", lambda *_args: self._update_monitor_url_preview())
+
+        notebook.bind("<<NotebookTabChanged>>", lambda event: self._on_settings_tab_changed(), add="+")
+        self.previews_layout_var.trace_add("write", lambda *_args: self._on_previews_layout_changed())
+        for var in (
+            self.previews_enabled_var, self.previews_motion_var, self.previews_count_var, self.previews_frame_var,
+            self.previews_speed_var, self.previews_delay_var, self.previews_uploaded_only_var,
+            self.start_logo_path_var, self.fullscreen_var, self.resolution_var,
+        ):
+            var.trace_add("write", lambda *_args: self._on_start_preview_settings_changed())
+        self.start_message_var.trace_add("write", lambda *_args: self._on_start_message_changed())
+        for var in (self.monitor_show_photos_var, self.previews_delay_var, self.previews_uploaded_only_var):
+            var.trace_add("write", lambda *_args: self._sync_monitor_photo_rules())
+
         self._sync_test_buttons()
+        self._refresh_preview_choices()
         self._refresh_logs()
 
     def _update_monitor_url_preview(self):
@@ -419,6 +511,67 @@ class SetupWindow:
         ttk.Button(file_row, text="Browse...", command=self._on_browse_logo).pack(side="left", padx=(6, 0))
         ttk.Button(file_row, text="Clear", command=self._on_clear_logo).pack(side="left", padx=(4, 0))
         return row + 1
+
+    def _build_previews_section(self, parent, row):
+        ttk.Separator(parent, orient="horizontal").grid(row=row, column=0, columnspan=2, sticky="ew", pady=8)
+        row += 1
+        ttk.Label(parent, text="Photo Previews", font=("Segoe UI", 11, "bold")).grid(
+            row=row, column=0, columnspan=2, sticky="w"
+        )
+        row += 1
+        ttk.Checkbutton(
+            parent, text="Show photos taken earlier today around the logo", variable=self.previews_enabled_var
+        ).grid(row=row, column=0, columnspan=2, sticky="w", pady=(2, 4))
+        row += 1
+
+        options = ttk.Frame(parent)
+        options.grid(row=row, column=0, columnspan=2, sticky="w")
+        row += 1
+        self.previews_layout_combo = self._add_option(
+            options, 0, 0, "Layout:", self.previews_layout_var, [label for _, label in start_screen.LAYOUTS], 20
+        )
+        self.previews_motion_combo = self._add_option(options, 0, 2, "Motion:", self.previews_motion_var, [], 12)
+        self.previews_frame_combo = self._add_option(
+            options, 1, 0, "Frame:", self.previews_frame_var, [label for _, label in start_screen.FRAMES], 20
+        )
+        self.previews_speed_combo = self._add_option(
+            options, 1, 2, "Speed:", self.previews_speed_var, [label for _, label in start_screen.SPEEDS], 12
+        )
+        self.previews_count_combo = self._add_option(options, 2, 0, "Photos shown:", self.previews_count_var, [], 5)
+        self.previews_delay_combo = self._add_option(
+            options, 2, 2, "Wait (seconds):", self.previews_delay_var, self.previews_delay_choices, 12
+        )
+
+        self.previews_uploaded_only_check = ttk.Checkbutton(
+            parent, text="Only photos that posted to Discord or Telegram", variable=self.previews_uploaded_only_var
+        )
+        self.previews_uploaded_only_check.grid(row=row, column=0, columnspan=2, sticky="w", pady=(4, 0))
+        row += 1
+        ttk.Label(
+            parent,
+            text="Either one is enough - photos taken with both turned off always count. 'Today' starts\n"
+                 "at 4 AM, and a photo waits the seconds above first. Hide single photos from the Logs tab.",
+            foreground="#555", font=("Segoe UI", 8), justify="left",
+        ).grid(row=row, column=0, columnspan=2, sticky="w", pady=(0, 6))
+        row += 1
+
+        placeholder = ImageTk.PhotoImage(Image.new("RGB", PREVIEW_SIZE, (0, 0, 0)))
+        self.start_preview_label = ttk.Label(parent, image=placeholder)
+        self.start_preview_label.image = placeholder  # keep a reference so it isn't garbage-collected
+        self.start_preview_label.grid(row=row, column=0, columnspan=2, sticky="w")
+        row += 1
+        self.start_preview_note_var = tk.StringVar(value="")
+        ttk.Label(parent, textvariable=self.start_preview_note_var, foreground="#888", font=("Segoe UI", 8)).grid(
+            row=row, column=0, columnspan=2, sticky="w", pady=(2, 0)
+        )
+        return row + 1
+
+    @staticmethod
+    def _add_option(parent, row, column, label, var, values, width):
+        ttk.Label(parent, text=label).grid(row=row, column=column, sticky="w", pady=3, padx=(16 if column else 0, 6))
+        combo = ttk.Combobox(parent, textvariable=var, values=values, width=width, state="readonly")
+        combo.grid(row=row, column=column + 1, sticky="w")
+        return combo
 
     def _add_key_capture(self, parent, row, label, var):
         ttk.Label(parent, text=label).grid(row=row, column=0, sticky="w", pady=3)
@@ -586,6 +739,164 @@ class SetupWindow:
         path.mkdir(parents=True, exist_ok=True)
         os.startfile(str(path))
 
+    # ---------- Start page preview ----------
+
+    def _previews_layout(self):
+        return _key_for(start_screen.LAYOUTS, self.previews_layout_var.get(), "scatter")
+
+    def _previews_motion(self):
+        return _key_for(start_screen.MOTIONS, self.previews_motion_var.get(), "static")
+
+    @staticmethod
+    def _int_from(var, default):
+        try:
+            return var.get()
+        except tk.TclError:
+            return default
+
+    def _preview_config_values(self):
+        return {
+            "start_previews_enabled": self.previews_enabled_var.get(),
+            "start_previews_layout": self._previews_layout(),
+            "start_previews_motion": self._previews_motion(),
+            "start_previews_count": self._int_from(self.previews_count_var, 6),
+            "start_previews_frame": _key_for(start_screen.FRAMES, self.previews_frame_var.get(), "white"),
+            "start_previews_speed": _key_for(start_screen.SPEEDS, self.previews_speed_var.get(), "medium"),
+            "start_previews_delay_seconds": self._int_from(self.previews_delay_var, 60),
+            "start_previews_uploaded_only": self.previews_uploaded_only_var.get(),
+        }
+
+    def _on_previews_layout_changed(self):
+        # Each layout has its own sensible count; the old one may not even be offered (columns are
+        # even-only, background is always 1).
+        self.previews_count_var.set(start_screen.DEFAULT_COUNT[self._previews_layout()])
+        self._refresh_preview_choices()
+        self._on_start_preview_settings_changed()
+
+    def _refresh_preview_choices(self):
+        """Offers only the motions and counts that fit the chosen layout."""
+        layout = self._previews_layout()
+        motions = start_screen.MOTIONS_BY_LAYOUT[layout]
+        motion_labels = dict(start_screen.MOTIONS)
+        self.previews_motion_combo.configure(values=[motion_labels[motion] for motion in motions])
+        if self._previews_motion() not in motions:
+            self.previews_motion_var.set(motion_labels[start_screen.DEFAULT_MOTION[layout]])
+        self.previews_count_combo.configure(values=start_screen.COUNT_CHOICES[layout])
+        self._sync_preview_controls()
+
+    def _sync_preview_controls(self):
+        enabled = self.previews_enabled_var.get()
+        layout = self._previews_layout()
+
+        def state(applies):
+            return "readonly" if enabled and applies else "disabled"
+
+        self.previews_layout_combo.configure(state=state(True))
+        self.previews_motion_combo.configure(state=state(True))
+        self.previews_count_combo.configure(state=state(layout != "background"))
+        self.previews_frame_combo.configure(state=state(layout in ("filmstrip", "columns")))
+        self.previews_speed_combo.configure(state=state(self._previews_motion() != "static"))
+        self.previews_delay_combo.configure(state=state(True))
+        self.previews_uploaded_only_check.configure(state="normal" if enabled else "disabled")
+
+    def _on_start_preview_settings_changed(self):
+        self._sync_preview_controls()
+        self._start_preview_screen = None  # rebuilt with the new settings on the next preview frame
+
+    def _on_start_message_changed(self):
+        # Typing doesn't rebuild the preview - a rebuild restarts its animation, on every keystroke.
+        if self._start_preview_screen is not None:
+            self._start_preview_screen.message = self.start_message_var.get().strip()
+
+    def _sync_monitor_photo_rules(self):
+        self._monitor_photo_rules = (
+            self.monitor_show_photos_var.get(),
+            self._int_from(self.previews_delay_var, 60),
+            self.previews_uploaded_only_var.get(),
+        )
+
+    def _start_tab_visible(self):
+        return self.settings_notebook.select() == str(self.start_tab)
+
+    def _on_settings_tab_changed(self):
+        visible = self._start_tab_visible()
+        if visible and self._start_preview_job is None:
+            self._update_start_preview()
+        elif not visible and self._start_preview_job is not None:
+            self.root.after_cancel(self._start_preview_job)
+            self._start_preview_job = None
+        if self._start_preview_feed is not None:
+            self._start_preview_feed.set_active(visible and self.previews_enabled_var.get())
+
+    def _load_start_preview_logo(self):
+        path = self.start_logo_path_var.get().strip()
+        if path != self._start_preview_logo_path:
+            self._start_preview_logo_path = path
+            # Relative paths are relative to the app folder, as Config resolves them for the booth.
+            resolved = Path(path) if not path or Path(path).is_absolute() else ROOT_DIR / path
+            self._start_preview_logo = start_screen.load_logo(str(resolved) if path else "")
+        return self._start_preview_logo
+
+    def _build_start_preview(self):
+        values = {
+            **self.initial_config,
+            **self._preview_config_values(),
+            "camera_width": self.selected_resolution[0],
+            "camera_height": self.selected_resolution[1],
+        }
+        settings = start_screen.preview_settings(values)
+        booth_w, booth_h = _booth_screen_size() if self.fullscreen_var.get() else WINDOWED_BOOTH_SIZE
+        scale = min(START_PREVIEW_RENDER[0] / booth_w, START_PREVIEW_RENDER[1] / booth_h)
+        render_size = (round(booth_w * scale), round(booth_h * scale))
+        if self._start_preview_surface is None or self._start_preview_surface.get_size() != render_size:
+            self._start_preview_surface = pygame.Surface(render_size)
+
+        if settings.enabled and self._start_preview_feed is None:
+            self._start_preview_feed = start_screen.PreviewFeed(
+                self._photos_dir_path(), settings.delay_s, settings.uploaded_only, sample_fallback=True
+            )
+        if self._start_preview_feed is not None:
+            self._start_preview_feed.set_rules(settings.delay_s, settings.uploaded_only)
+            self._start_preview_feed.set_active(settings.enabled)
+
+        self._start_preview_screen = start_screen.StartScreen(
+            render_size, settings=settings, message=self.start_message_var.get().strip(),
+            logo=self._load_start_preview_logo(), feed=self._start_preview_feed,
+            tiles=self._start_preview_tiles, scale=scale,
+        )
+
+    def _update_start_preview(self):
+        """Draws the start page as the booth would - same StartScreen, at the booth's proportions -
+        onto an offscreen surface. Only runs while the Start Page tab is showing."""
+        self._start_preview_job = None
+        if self._start_preview_screen is None:
+            self._build_start_preview()
+        surface = self._start_preview_surface
+        surface.fill((0, 0, 0))
+        self._start_preview_screen.draw(surface)
+
+        image = Image.frombytes("RGB", surface.get_size(), pygame.image.tobytes(surface, "RGB"))
+        image.thumbnail(PREVIEW_SIZE, Image.Resampling.BOX)
+        canvas = Image.new("RGB", PREVIEW_SIZE, (20, 20, 20))
+        canvas.paste(image, ((PREVIEW_SIZE[0] - image.width) // 2, (PREVIEW_SIZE[1] - image.height) // 2))
+        photo = ImageTk.PhotoImage(canvas)
+        self.start_preview_label.configure(image=photo)
+        self.start_preview_label.image = photo  # keep a reference so it isn't garbage-collected
+        self.start_preview_note_var.set(self._start_preview_note())
+
+        self._start_preview_job = self.root.after(START_PREVIEW_INTERVAL_MS, self._update_start_preview)
+
+    def _start_preview_note(self):
+        if not self.previews_enabled_var.get():
+            return "Preview of the start page. Photo previews are off."
+        screen = self._start_preview_screen
+        if screen.using_samples:
+            return "Showing recent photos as samples - none from today can be shown yet."
+        if screen.photo_count == 0:
+            return "No photos to show yet - the start page looks like this until there are."
+        noun = "photo" if screen.photo_count == 1 else "photos"
+        return f"Preview of the start page - {screen.photo_count} {noun} from today can be shown."
+
     # ---------- Test credentials ----------
 
     def _sync_test_buttons(self):
@@ -680,13 +991,14 @@ class SetupWindow:
 
         detail_frame = ttk.Frame(parent)
         detail_frame.grid(row=row, column=0, columnspan=2, sticky="w", pady=(0, 8))
-        columns = ("captured", "photo", "local", "state")
+        columns = ("captured", "photo", "local", "state", "start")
         tree = ttk.Treeview(detail_frame, columns=columns, show="headings", height=8, selectmode="browse")
         headings = {
             "captured": ("Captured", 78),
             "photo": ("Photo", 140),
             "local": ("Local", 44),
             "state": ("State", 150),
+            "start": ("Start page", 74),
         }
         for col, (heading, width) in headings.items():
             tree.heading(col, text=heading)
@@ -706,6 +1018,9 @@ class SetupWindow:
         ttk.Button(
             action_row, text="Delete Selected Photo", command=lambda: self._on_delete_log_entry("overview")
         ).pack(side="left", padx=(8, 0))
+        self.hide_photo_button = ttk.Button(action_row, text=HIDE_PHOTO_LABEL, command=self._on_toggle_photo_hidden)
+        self.hide_photo_button.pack(side="left", padx=(8, 0))
+        tree.bind("<<TreeviewSelect>>", lambda event: self._sync_hide_photo_button())
 
     def _build_destination_log_view(self, parent, destination):
         label = destination.capitalize()
@@ -784,7 +1099,42 @@ class SetupWindow:
             return
 
         capture_log.delete_entry(photo_file)
+        photo_gallery.set_hidden(photo_file, False)  # nothing left to hide
         self._refresh_logs()
+
+    def _selected_overview_photo(self):
+        selection = self.log_trees["overview"].selection()
+        if not selection:
+            return None
+        data = self.log_row_data.get("overview", {}).get(selection[0])
+        return data["photo_file"] if data else None
+
+    def _sync_hide_photo_button(self):
+        photo_file = self._selected_overview_photo()
+        hidden = bool(photo_file) and photo_file in photo_gallery.hidden_photos()
+        self.hide_photo_button.configure(text=SHOW_PHOTO_LABEL if hidden else HIDE_PHOTO_LABEL)
+
+    def _on_toggle_photo_hidden(self):
+        if not self.log_trees["overview"].selection():
+            messagebox.showinfo("Start Page", "Select a photo in the table first.")
+            return
+        photo_file = self._selected_overview_photo()
+        if not photo_file:
+            messagebox.showinfo("Start Page", "This entry has no photo file.")
+            return
+        hidden = photo_file in photo_gallery.hidden_photos()
+        if not photo_gallery.set_hidden(photo_file, not hidden):
+            messagebox.showerror("Start Page", f"Could not save the change to:\n{photo_gallery.HIDDEN_PATH}")
+            return
+        self._refresh_logs()
+        tree = self.log_trees["overview"]
+        for iid, data in self.log_row_data.get("overview", {}).items():
+            if data["photo_file"] == photo_file:
+                tree.selection_set(iid)
+                tree.see(iid)
+                break
+        if self._start_preview_feed is not None:
+            self._start_preview_feed.rescan()
 
     def _refresh_logs(self):
         entries = capture_log.read_entries()
@@ -917,10 +1267,11 @@ class SetupWindow:
         row_data = {}
 
         if mode == "overview":
+            hidden = photo_gallery.hidden_photos()
             relevant_entries = entries
             relevant_pending = pending
-            pending_row_fn = self._pending_row_values
-            resolved_row_fn = self._resolved_row_values
+            pending_row_fn = lambda entry: self._pending_row_values(entry, hidden)
+            resolved_row_fn = lambda entry: self._resolved_row_values(entry, hidden)
             tag_fn = capture_log.classify_entry
         else:
             enabled_key = f"{mode}_enabled"
@@ -942,21 +1293,23 @@ class SetupWindow:
 
         self.log_row_data[mode] = row_data
 
-    def _resolved_row_values(self, entry):
+    def _resolved_row_values(self, entry, hidden):
         return (
             entry["timestamp"].strftime("%m/%d %H:%M:%S"),
             entry["photo_file"] or "(no photo)",
             "✓" if entry["saved_locally"] else "✗",
             f"Resolved {entry['resolved_at'].strftime('%H:%M:%S')}",
+            "Hidden" if entry["photo_file"] in hidden else "",
         )
 
-    def _pending_row_values(self, entry):
+    def _pending_row_values(self, entry, hidden):
         remaining = (entry["deadline_at"] - datetime.now()).total_seconds()
         return (
             entry["captured_at"].strftime("%m/%d %H:%M:%S"),
             entry["photo_file"] or "(no photo)",
             "✓" if entry["saved_locally"] else "✗",
             f"Listening... {self._format_remaining(remaining)} left",
+            "Hidden" if entry["photo_file"] in hidden else "",
         )
 
     def _resolved_row_values_for(self, entry, destination):
@@ -1049,6 +1402,15 @@ class SetupWindow:
             "destinations": destinations,
         }
 
+    def _monitor_photos(self):
+        """Also called from the monitor's handler thread - plain attributes only, like
+        _status_snapshot. Unlike its destinations, these follow the form live: un-ticking the
+        monitor's photos checkbox should take them off the page right away."""
+        show, delay_s, uploaded_only = self._monitor_photo_rules
+        if not show:
+            return None
+        return photo_gallery.eligible_photos(self._photos_dir_path(), delay_s=delay_s, uploaded_only=uploaded_only)
+
     # ---------- Actions ----------
 
     def _on_start(self):
@@ -1089,6 +1451,7 @@ class SetupWindow:
             "keep_awake": self.keep_awake_var.get(),
             "start_message": self.start_message_var.get().strip(),
             "start_logo_path": self.start_logo_path_var.get().strip(),
+            **self._preview_config_values(),
             "prompt_message": self.prompt_message_var.get().strip(),
             "review_message_top": self.review_message_top_var.get().strip(),
             "review_message_bottom": self.review_message_bottom_var.get().strip(),
@@ -1104,6 +1467,7 @@ class SetupWindow:
             "monitor_enabled": self.monitor_enabled_var.get(),
             "monitor_port": self.monitor_port_var.get(),
             "monitor_show_url": self.monitor_show_url_var.get(),
+            "monitor_show_photos": self.monitor_show_photos_var.get(),
         }
         self.remember_settings = self.remember_settings_var.get()
         self._cleanup()
@@ -1129,6 +1493,12 @@ class SetupWindow:
         if self.monitor is not None:
             self.monitor.stop()
             self.monitor = None
+        if self._start_preview_job is not None:
+            self.root.after_cancel(self._start_preview_job)
+            self._start_preview_job = None
+        if self._start_preview_feed is not None:
+            self._start_preview_feed.stop()
+            self._start_preview_feed = None
 
     def run(self):
         self.root.mainloop()

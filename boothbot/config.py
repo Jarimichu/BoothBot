@@ -32,6 +32,17 @@ DEFAULTS = {
     "photo_review_seconds": 5,
     "start_message": "Press button to start photobooth!",
     "start_logo_path": "",
+    # Photos taken earlier today, shown on the start page - see start_screen.py (how) and
+    # photo_gallery.py (which). Off by default so updating never starts showing guests' photos
+    # at an event by surprise.
+    "start_previews_enabled": False,
+    "start_previews_layout": "scatter",
+    "start_previews_motion": "drift",
+    "start_previews_count": 6,
+    "start_previews_frame": "white",
+    "start_previews_speed": "medium",
+    "start_previews_delay_seconds": 60,
+    "start_previews_uploaded_only": True,
     "prompt_message": "Press the button to take a photo!",
     "review_message_top": "Thanks for coming to the con!",
     "review_message_bottom": "Please see your photo on the Telegram channel",
@@ -45,6 +56,8 @@ DEFAULTS = {
     "monitor_enabled": True,
     "monitor_port": 8080,
     "monitor_show_url": False,
+    # The monitor page has no login, so it only shows photos when asked to.
+    "monitor_show_photos": False,
 }
 
 

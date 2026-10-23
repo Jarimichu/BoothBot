@@ -1,6 +1,7 @@
 """Pure HTML rendering for the remote monitoring dashboard - no sockets, easy to test standalone."""
 import html
 from datetime import datetime
+from urllib.parse import quote
 
 from . import __version__
 
@@ -29,6 +30,11 @@ h3 { margin: 0 0 6px; font-size: 0.95em; opacity: 0.85; }
 .chart .seg.ok { background: #50DC64; }
 .chart .seg.fail { background: #E64646; }
 .axis { display: flex; justify-content: space-between; font-size: 0.7em; opacity: 0.7; margin-top: 2px; }
+.photos { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 8px; }
+.photos figure { margin: 0; }
+.photos img { width: 100%; display: block; border-radius: 4px; background: rgba(128,128,128,0.15); }
+.photos figcaption { font-size: 0.75em; opacity: 0.7; margin-top: 2px; }
+.note { font-size: 0.8em; opacity: 0.7; }
 table { border-collapse: collapse; width: 100%; }
 td, th { text-align: left; padding: 3px 8px; font-size: 0.9em; }
 footer { margin-top: 16px; font-size: 0.8em; opacity: 0.7; }
@@ -149,7 +155,29 @@ def render_totals_table(totals: dict) -> str:
     )
 
 
-def render_dashboard(status: dict, hourly: list, totals: dict, pending: list, refresh_seconds: int = 10) -> str:
+def render_photos_panel(photos) -> str:
+    """Today's photos that the start page may show - photos is None when the setting is off, which
+    leaves the section out entirely."""
+    if photos is None:
+        return ""
+    if not photos:
+        body = '<div class="note">None yet today.</div>'
+    else:
+        figures = "".join(
+            f'<figure><img src="/photo/{quote(path.name)}" alt="{html.escape(path.name)}" loading="lazy">'
+            f'<figcaption>{captured_at.strftime("%H:%M")}</figcaption></figure>'
+            for path, captured_at in photos
+        )
+        body = f'<div class="photos">{figures}</div>'
+    return (
+        "<section><h3>Today's photos (as the start page may show them)</h3>"
+        f"{body}</section>"
+    )
+
+
+def render_dashboard(
+    status: dict, hourly: list, totals: dict, pending: list, refresh_seconds: int = 10, photos=None
+) -> str:
     refresh_tag = f'<meta http-equiv="refresh" content="{refresh_seconds}">' if refresh_seconds else ""
 
     if status["consecutive_failures"] >= 3:
@@ -182,6 +210,7 @@ def render_dashboard(status: dict, hourly: list, totals: dict, pending: list, re
 {render_status_panel(status)}
 {render_pending_panel(pending)}
 {render_error_panel(status)}
+{render_photos_panel(photos)}
 {render_bar_chart(hourly)}
 {render_totals_table(totals)}
 <footer>{pause_link} &middot; <a href="/status.json">json</a></footer>

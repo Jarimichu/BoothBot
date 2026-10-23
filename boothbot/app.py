@@ -3,14 +3,15 @@ import sys
 import threading
 import time
 from datetime import datetime, timedelta
-from pathlib import Path
 
 import pygame
 
-from . import __version__, capture_log, keep_awake, uploader
+from . import __version__, capture_log, keep_awake, photo_gallery, uploader
 from .autostart import AUTOSTART_ARG
 from .camera import CameraError, fit_frame, list_camera_names, open_camera_in_background, resolve_camera_index
+from .drawing import draw_centered_text, draw_wrapped_centered_text, frame_to_surface, scale_to_fit
 from .monitor_server import MonitorServer
+from .start_screen import PreviewFeed, StartScreen, load_logo, preview_settings
 
 START = "start"
 LIVE = "live"
@@ -30,22 +31,6 @@ UPLOAD_RETRY_WINDOW_S = 15 * 60
 UPLOAD_RETRY_INTERVAL_S = 60
 AUTOSTART_CAMERA_WAIT_S = 60  # how long an auto-start waits for the saved camera before showing setup
 AUTOSTART_CAMERA_POLL_S = 2
-
-
-def frame_to_surface(frame_rgb):
-    height, width, _ = frame_rgb.shape
-    return pygame.image.frombuffer(frame_rgb.tobytes(), (width, height), "RGB")
-
-
-def scale_to_fit(surface, target_size):
-    target_w, target_h = target_size
-    src_w, src_h = surface.get_size()
-    scale = min(target_w / src_w, target_h / src_h)
-    new_size = (max(1, int(src_w * scale)), max(1, int(src_h * scale)))
-    # Camera frames usually arrive already sized to fit (fit_frame) - skip a same-size smoothscale.
-    scaled = surface if new_size == (src_w, src_h) else pygame.transform.smoothscale(surface, new_size)
-    offset = ((target_w - new_size[0]) // 2, (target_h - new_size[1]) // 2)
-    return scaled, offset
 
 
 class BoothApp:
@@ -90,7 +75,19 @@ class BoothApp:
         self.camera = opening.result()
         self.clock = pygame.time.Clock()
 
-        self.start_logo_surface = self._load_start_logo()
+        # The camera's actual size, not the requested one - it's what the photos come out as.
+        self.preview_settings = preview_settings(
+            {**vars(config), "camera_width": self.camera.width, "camera_height": self.camera.height}
+        )
+        self.preview_feed = None
+        if self.preview_settings.enabled:
+            self.preview_feed = PreviewFeed(
+                config.photos_dir, self.preview_settings.delay_s, self.preview_settings.uploaded_only
+            )
+        self.start_screen = StartScreen(
+            self.screen_size, settings=self.preview_settings, message=config.start_message,
+            logo=load_logo(config.start_logo_path), feed=self.preview_feed,
+        )
 
         self.state = START
         self.state_entered_at = time.time()
@@ -121,27 +118,13 @@ class BoothApp:
         self.monitor = None
         self.monitor_url = None
 
-    def _load_start_logo(self):
-        if not self.config.start_logo_path:
-            return None
-        logo_path = Path(self.config.start_logo_path)
-        if not logo_path.exists():
-            print(f"Start logo not found: {logo_path}")
-            return None
-        try:
-            image = pygame.image.load(str(logo_path)).convert_alpha()
-        except pygame.error as exc:
-            print(f"Could not load start logo '{logo_path}': {exc}")
-            return None
-        max_box = (int(self.screen_size[0] * 0.5), int(self.screen_size[1] * 0.45))
-        scaled, _ = scale_to_fit(image, max_box)
-        return scaled
-
     def run(self):
         """Returns True if the user pressed the quit key (setup should reopen), False if the window
         was closed outright (e.g. Alt+F4), meaning the whole program should exit."""
         if self.config.monitor_enabled:
-            self.monitor = MonitorServer(self._status_snapshot, port=self.config.monitor_port)
+            self.monitor = MonitorServer(
+                self._status_snapshot, photos_provider=self._monitor_photos, port=self.config.monitor_port
+            )
             self.monitor_url = self.monitor.start()
 
         running = True
@@ -167,6 +150,8 @@ class BoothApp:
         finally:
             if self.monitor is not None:
                 self.monitor.stop()
+            if self.preview_feed is not None:
+                self.preview_feed.stop()
             self.camera.release()
             pygame.quit()
         return return_to_setup
@@ -177,6 +162,9 @@ class BoothApp:
 
     def _update(self):
         now = time.time()
+        if self.preview_feed is not None:
+            # Nothing to scan for while guests are in front of the camera - picks up again on return.
+            self.preview_feed.set_active(self.state == START)
 
         if self.state == START:
             if now - self._last_camera_health_check >= CAMERA_HEALTH_INTERVAL_S:
@@ -378,14 +366,7 @@ class BoothApp:
                 self.screen.blit(*review_photo)
 
         if self.state == START:
-            message_y_ratio = 0.5
-            if self.start_logo_surface is not None:
-                logo_rect = self.start_logo_surface.get_rect(
-                    center=(self.screen_size[0] / 2, self.screen_size[1] * 0.42)
-                )
-                self.screen.blit(self.start_logo_surface, logo_rect)
-                message_y_ratio = 0.78
-            self._draw_wrapped_centered_text(self.config.start_message, self.font_med, WHITE, y_ratio=message_y_ratio)
+            self.start_screen.draw(self.screen)
             if self.monitor_url and self.config.monitor_show_url:
                 self._draw_monitor_url()
 
@@ -455,37 +436,24 @@ class BoothApp:
             "destinations": destinations,
         }
 
+    def _monitor_photos(self):
+        """Called from the monitor server's handler thread - reads only config (never mutated once
+        the session starts) and photo_gallery, which is safe from any thread. None = don't show any."""
+        if not self.config.monitor_show_photos:
+            return None
+        return photo_gallery.eligible_photos(
+            self.config.photos_dir,
+            delay_s=self.preview_settings.delay_s,
+            uploaded_only=self.preview_settings.uploaded_only,
+        )
+
     def _draw_centered_text(self, text, font, color, y_ratio, shadow=False):
-        if shadow:
-            shadow_surf = font.render(text, True, BLACK)
-            shadow_rect = shadow_surf.get_rect(center=(self.screen_size[0] / 2 + 3, self.screen_size[1] * y_ratio + 3))
-            self.screen.blit(shadow_surf, shadow_rect)
-        text_surf = font.render(text, True, color)
-        text_rect = text_surf.get_rect(center=(self.screen_size[0] / 2, self.screen_size[1] * y_ratio))
-        self.screen.blit(text_surf, text_rect)
+        draw_centered_text(self.screen, text, font, color, y_ratio, shadow=shadow)
 
     def _draw_wrapped_centered_text(self, text, font, color, y_ratio, shadow=False, max_width_ratio=0.85):
-        max_width = self.screen_size[0] * max_width_ratio
-        words = text.split()
-        lines = [words[0]] if words else [""]
-        for word in words[1:]:
-            candidate = f"{lines[-1]} {word}"
-            if font.size(candidate)[0] <= max_width:
-                lines[-1] = candidate
-            else:
-                lines.append(word)
-
-        line_height = font.get_linesize()
-        top = self.screen_size[1] * y_ratio - (line_height * len(lines)) / 2
-        for i, line in enumerate(lines):
-            center_y = top + line_height * i + line_height / 2
-            if shadow:
-                shadow_surf = font.render(line, True, BLACK)
-                shadow_rect = shadow_surf.get_rect(center=(self.screen_size[0] / 2 + 3, center_y + 3))
-                self.screen.blit(shadow_surf, shadow_rect)
-            text_surf = font.render(line, True, color)
-            text_rect = text_surf.get_rect(center=(self.screen_size[0] / 2, center_y))
-            self.screen.blit(text_surf, text_rect)
+        draw_wrapped_centered_text(
+            self.screen, text, font, color, y_ratio, shadow=shadow, max_width_ratio=max_width_ratio
+        )
 
 
 def main():

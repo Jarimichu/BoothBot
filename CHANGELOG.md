@@ -4,6 +4,23 @@ All notable changes to BoothBot are documented in this file.
 
 ## [Unreleased]
 
+## [1.9.0] - 2026-10-23
+
+### Added
+- **Photo previews on the start page** (Start Page tab, off by default). Photos taken earlier today are shown around the logo, so an idle booth has something to catch the eye of people walking past. Everything is configurable:
+  - **Layout**: a filmstrip along the bottom, columns either side of the logo, a scatter of tilted polaroid prints (each with the time it was taken written underneath), or a dimmed, blurred full-screen background slideshow.
+  - **Motion**: only what suits the chosen layout is offered. Static (newest first), rotate (one photo swaps for another every few seconds), scroll (filmstrip and columns: a continuous ticker), or a gentle drift (polaroids bob slightly). Rotating and scrolling mostly show recent photos, with older ones from the day mixed in now and then.
+  - **Photos shown** (per-layout default), **Frame** for the filmstrip and columns (white border, thin border with a soft halo, or rounded corners; a dark drop shadow wouldn't show on the black background), and **Speed** (slow/medium/fast).
+  - A newly eligible photo pops in and glows for a few seconds, so people notice their shot arrive.
+  - With nothing to show yet (first thing in the morning), the start page looks exactly as it did before. When the first photo arrives, the screen briefly dips to black and comes back with the new layout, so the logo never visibly jumps.
+- Which photos appear is deliberately conservative, since this puts guests' photos on a public screen:
+  - **Today's only.** "Today" starts at 4 AM rather than midnight, so a late-night session doesn't empty the screen at 12:00.
+  - **Only after a short wait** (Wait (seconds), 60 by default), so a photo doesn't pop up as that group walks away.
+  - **Only once posted** (on by default): a photo appears once at least one enabled destination has it, so the start page never shows a photo that isn't already in the channel. One destination is enough, because Telegram often reports a failure for a photo it actually delivered, and requiring both would keep such photos off the screen for good. A photo still being retried counts as soon as one destination succeeds. Photos taken with both destinations turned off always count, so previews still work for an offline booth.
+  - **Hide from Start Page** in the Logs tab's Overview hides a single photo without deleting it, and shows which photos are hidden. Hidden photos are kept in `logs/start_screen_hidden.txt`, not in `config.json`: hiding is an action on a photo, not a setting, so it doesn't depend on "Remember these settings". Deleting a photo also removes it from that list.
+- A live **preview of the start page** at the bottom of the Start Page tab, drawn by the same code as the booth at the booth screen's proportions. It updates as you change any setting. When no photos from today can be shown yet, it uses the most recent photos as samples so the layout can still be judged.
+- **Show today's photos on the monitor page** (General tab, off by default, because the page has no login). With it on, the remote monitor shows thumbnails of the newest photos the start page may show, with the same rules. Only photos on that list are ever served, so a hidden photo, one from another day, or any other file can't be fetched by guessing its name.
+
 ### Fixed
 - Releases build and publish themselves again. The GitHub Actions release workflow added in 1.7.3 (push a `vX.Y.Z` tag → build `BoothBot.exe` → publish a GitHub Release with this changelog's section as its notes) had been deleted from the repository along with its helper scripts, so v1.8.0 was published by hand. It's restored as it was, with its GitHub actions updated to their current versions. It now builds with the same Python (3.12) and PyInstaller (6.22.3) versions as local builds, so the published exe is built the same way as the one that was tested. The README now has a short Releases section.
 

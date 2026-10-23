@@ -1,18 +1,29 @@
 """Lightweight stdlib-only HTTP server for remote monitoring of a live booth session.
 Runs only while the fullscreen booth view is active - started/stopped by BoothApp.run()."""
+import io
 import json
 import socket
 import threading
+import time
 import traceback
+from collections import OrderedDict
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import parse_qs, urlsplit
+from urllib.parse import parse_qs, unquote, urlsplit
+
+from PIL import Image
 
 from . import capture_log, monitor_page
 
 DEFAULT_PORT = 8080
 PORT_SCAN_ATTEMPTS = 10
 REFRESH_SECONDS = 10
+PHOTO_PANEL_LIMIT = 12
+PHOTO_THUMB_SIZE = (480, 480)
+PHOTO_THUMB_CACHE = 48
+# One page view asks for the photo list once plus once per thumbnail - reuse it briefly rather
+# than re-reading captures.csv for every image.
+PHOTO_LIST_TTL_S = 5
 
 
 def get_lan_ip() -> str:
@@ -48,11 +59,50 @@ class _MonitorHTTPServer(ThreadingHTTPServer):
     # MonitorServer.start(). Disable it and request genuinely exclusive binding instead.
     allow_reuse_address = False
     status_provider = None
+    # Returns [(path, captured_at)] of the photos the page may show, or None when it shouldn't show
+    # any (the setting is off). Also the whitelist for /photo/ - nothing outside it is ever served.
+    photos_provider = None
 
     def server_bind(self):
         if hasattr(socket, "SO_EXCLUSIVEADDRUSE"):
             self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
         super().server_bind()
+
+    def init_photo_state(self):
+        # Handler threads run concurrently - _photo_lock guards both caches.
+        self._photo_lock = threading.Lock()
+        self._photo_list = (0.0, None)  # (expires at, list)
+        self._thumbs = OrderedDict()  # photo name -> JPEG bytes
+
+    def current_photos(self):
+        if self.photos_provider is None:
+            return None
+        with self._photo_lock:
+            expires_at, photos = self._photo_list
+            if time.monotonic() < expires_at:
+                return photos
+        photos = self.photos_provider()
+        with self._photo_lock:
+            self._photo_list = (time.monotonic() + PHOTO_LIST_TTL_S, photos)
+        return photos
+
+    def thumbnail(self, path):
+        with self._photo_lock:
+            if path.name in self._thumbs:
+                self._thumbs.move_to_end(path.name)
+                return self._thumbs[path.name]
+        with Image.open(path) as image:
+            image.draft("RGB", PHOTO_THUMB_SIZE)
+            image = image.convert("RGB")
+            image.thumbnail(PHOTO_THUMB_SIZE)
+            buffer = io.BytesIO()
+            image.save(buffer, "JPEG", quality=80)
+        data = buffer.getvalue()
+        with self._photo_lock:
+            self._thumbs[path.name] = data
+            while len(self._thumbs) > PHOTO_THUMB_CACHE:
+                self._thumbs.popitem(last=False)
+        return data
 
 
 class _MonitorRequestHandler(BaseHTTPRequestHandler):
@@ -71,6 +121,8 @@ class _MonitorRequestHandler(BaseHTTPRequestHandler):
                 self._handle_dashboard(parse_qs(parsed.query))
             elif parsed.path == "/status.json":
                 self._handle_status_json()
+            elif parsed.path.startswith("/photo/"):
+                self._handle_photo(unquote(parsed.path[len("/photo/"):]))
             elif parsed.path == "/favicon.ico":
                 self.send_response(204)
                 self.end_headers()
@@ -85,8 +137,29 @@ class _MonitorRequestHandler(BaseHTTPRequestHandler):
         hourly, totals = capture_log.summarize(entries)
         pending = capture_log.list_pending()
         refresh_seconds = 0 if query.get("refresh", [None])[0] == "0" else REFRESH_SECONDS
-        body = monitor_page.render_dashboard(status, hourly, totals, pending, refresh_seconds=refresh_seconds)
+        photos = self.server.current_photos()
+        body = monitor_page.render_dashboard(
+            status, hourly, totals, pending, refresh_seconds=refresh_seconds,
+            photos=None if photos is None else photos[:PHOTO_PANEL_LIMIT],
+        )
         self._send_text(200, "text/html; charset=utf-8", body)
+
+    def _handle_photo(self, name):
+        # Served only if it's on the current list - so never a hidden photo, one from another day,
+        # anything at all with the setting off, or a path outside the photos folder.
+        photos = self.server.current_photos() or []
+        path = next((path for path, _captured_at in photos if path.name == name), None)
+        if path is None:
+            self._send_text(404, "text/plain; charset=utf-8", "Not found")
+            return
+        try:
+            data = self.server.thumbnail(path)
+        except OSError:
+            self._send_text(404, "text/plain; charset=utf-8", "Not found")
+            return
+        # The filename never gets reused for a different photo, so browsers may keep it - the page
+        # reloads every few seconds and would otherwise fetch every thumbnail again each time.
+        self._send_bytes(200, "image/jpeg", data, cache_control="private, max-age=3600")
 
     def _handle_status_json(self):
         status = self.server.status_provider()
@@ -101,11 +174,13 @@ class _MonitorRequestHandler(BaseHTTPRequestHandler):
         self._send_text(200, "application/json", json.dumps(payload))
 
     def _send_text(self, code, content_type, body):
-        data = body.encode("utf-8")
+        self._send_bytes(code, content_type, body.encode("utf-8"))
+
+    def _send_bytes(self, code, content_type, data, cache_control="no-store"):
         self.send_response(code)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(data)))
-        self.send_header("Cache-Control", "no-store")
+        self.send_header("Cache-Control", cache_control)
         self.end_headers()
         self.wfile.write(data)
 
@@ -114,8 +189,9 @@ class MonitorServer:
     """Wraps a ThreadingHTTPServer running on a daemon thread. Binding never raises -
     start() returns None on failure so a busy port can't take the booth down."""
 
-    def __init__(self, status_provider, port: int = DEFAULT_PORT, host: str = "0.0.0.0"):
+    def __init__(self, status_provider, photos_provider=None, port: int = DEFAULT_PORT, host: str = "0.0.0.0"):
         self.status_provider = status_provider
+        self.photos_provider = photos_provider
         self.port = port
         self.host = host
         self.url = None
@@ -129,6 +205,8 @@ class MonitorServer:
             except OSError:
                 continue
             httpd.status_provider = self.status_provider
+            httpd.photos_provider = self.photos_provider
+            httpd.init_photo_state()
             self._httpd = httpd
             self.port = candidate_port
             self._thread = threading.Thread(target=httpd.serve_forever, daemon=True)
