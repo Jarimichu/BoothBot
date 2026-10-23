@@ -1,4 +1,5 @@
 """Fullscreen kiosk photobooth: start page -> live preview -> countdown -> capture -> upload."""
+import sys
 import threading
 import time
 from datetime import datetime, timedelta
@@ -7,7 +8,8 @@ from pathlib import Path
 import pygame
 
 from . import __version__, capture_log, uploader
-from .camera import Camera, CameraError
+from .autostart import AUTOSTART_ARG
+from .camera import CameraError, fit_frame, list_camera_names, open_camera_in_background, resolve_camera_index
 from .monitor_server import MonitorServer
 
 START = "start"
@@ -23,8 +25,11 @@ FLASH_DURATION_S = 0.15
 LIVE_IDLE_TIMEOUT_S = 30
 SCALED_REVIEW_PHOTO_RATIO = 0.75
 CAMERA_HEALTH_INTERVAL_S = 5
+HEALTH_CHECK_FRAME_SIZE = (160, 90)  # the frame is only checked for, never shown - keep it cheap
 UPLOAD_RETRY_WINDOW_S = 15 * 60
 UPLOAD_RETRY_INTERVAL_S = 60
+AUTOSTART_CAMERA_WAIT_S = 60  # how long an auto-start waits for the saved camera before showing setup
+AUTOSTART_CAMERA_POLL_S = 2
 
 
 def frame_to_surface(frame_rgb):
@@ -37,7 +42,8 @@ def scale_to_fit(surface, target_size):
     src_w, src_h = surface.get_size()
     scale = min(target_w / src_w, target_h / src_h)
     new_size = (max(1, int(src_w * scale)), max(1, int(src_h * scale)))
-    scaled = pygame.transform.smoothscale(surface, new_size)
+    # Camera frames usually arrive already sized to fit (fit_frame) - skip a same-size smoothscale.
+    scaled = surface if new_size == (src_w, src_h) else pygame.transform.smoothscale(surface, new_size)
     offset = ((target_w - new_size[0]) // 2, (target_h - new_size[1]) // 2)
     return scaled, offset
 
@@ -67,7 +73,17 @@ class BoothApp:
         except ValueError:
             self.quit_key = pygame.K_ESCAPE
 
-        self.camera = Camera(config.camera_index)
+        # Opening the camera at a set resolution takes several seconds - say so rather than leaving
+        # a blank fullscreen window, and keep pumping events meanwhile so Windows doesn't flag it as
+        # Not Responding (see open_camera_in_background). result() re-raises CameraError.
+        self.screen.fill(BLACK)
+        self._draw_wrapped_centered_text("Starting camera...", self.font_small, WHITE, y_ratio=0.5)
+        pygame.display.flip()
+        opening = open_camera_in_background(config.camera_index, config.camera_width, config.camera_height)
+        while not opening.done():
+            pygame.event.pump()
+            pygame.time.wait(50)
+        self.camera = opening.result()
         self.clock = pygame.time.Clock()
 
         self.start_logo_surface = self._load_start_logo()
@@ -76,6 +92,7 @@ class BoothApp:
         self.state_entered_at = time.time()
         self.countdown_start = None
         self.captured_frame = None
+        self._review_photo = None  # captured_frame fitted for REVIEW - see _get_review_photo
 
         # Live status, read by the monitor server's handler thread via _status_snapshot(), and
         # written by both the main thread (state/camera/last_capture_at) and potentially several
@@ -159,7 +176,7 @@ class BoothApp:
 
         if self.state == START:
             if now - self._last_camera_health_check >= CAMERA_HEALTH_INTERVAL_S:
-                self._read_camera_frame()
+                self._read_camera_frame(fit_within=HEALTH_CHECK_FRAME_SIZE)
                 self._last_camera_health_check = now
 
         elif self.state == LIVE:
@@ -186,17 +203,19 @@ class BoothApp:
                 self.state = START
                 self.state_entered_at = now
 
-    def _read_camera_frame(self):
-        """The only place the camera is read from - tracks live health for the monitor dashboard."""
-        frame = self.camera.read_frame_rgb()
+    def _read_camera_frame(self, fit_within=None):
+        """The only place the camera is read from - tracks live health for the monitor dashboard.
+        fit_within is for frames that are only displayed; the capture itself reads full size."""
+        frame = self.camera.read_frame_rgb(fit_within=fit_within)
         self.camera_ok = frame is not None
         self.camera_checked_at = datetime.now()
         return frame
 
     def _capture_and_flash(self):
-        frame = self._read_camera_frame()
-        if frame is not None:
-            self.captured_frame = frame
+        # Overwritten even when the read failed (None): keeping the previous capture here would
+        # make _start_upload save and post the previous group's photo again as if it were new.
+        self.captured_frame = self._read_camera_frame()
+        self._review_photo = None
         captured_at = datetime.now()
         self.last_capture_at = captured_at
         self.captures_this_session += 1  # only ever written from the main thread - no lock needed
@@ -343,23 +362,16 @@ class BoothApp:
     def _draw(self):
         self.screen.fill(BLACK)
 
-        if self.state == START:
-            frame = None
-        elif self.state in (FLASH, REVIEW):
-            frame = self.captured_frame
-        else:
-            frame = self._read_camera_frame()
-
-        if frame is not None:
-            surface = frame_to_surface(frame)
-            if self.config.scale_review_photo and self.state == REVIEW:
-                box_w = int(self.screen_size[0] * SCALED_REVIEW_PHOTO_RATIO)
-                box_h = int(self.screen_size[1] * SCALED_REVIEW_PHOTO_RATIO)
-            else:
-                box_w, box_h = self.screen_size
-            scaled, offset = scale_to_fit(surface, (box_w, box_h))
-            box_origin = ((self.screen_size[0] - box_w) // 2, (self.screen_size[1] - box_h) // 2)
-            self.screen.blit(scaled, (box_origin[0] + offset[0], box_origin[1] + offset[1]))
+        # START shows no camera, and FLASH is covered by its white fill below.
+        if self.state in (LIVE, COUNTDOWN):
+            frame = self._read_camera_frame(fit_within=self.screen_size)
+            if frame is not None:
+                scaled, offset = scale_to_fit(frame_to_surface(frame), self.screen_size)
+                self.screen.blit(scaled, offset)
+        elif self.state == REVIEW:
+            review_photo = self._get_review_photo()
+            if review_photo is not None:
+                self.screen.blit(*review_photo)
 
         if self.state == START:
             message_y_ratio = 0.5
@@ -394,6 +406,21 @@ class BoothApp:
             )
 
         pygame.display.flip()
+
+    def _get_review_photo(self):
+        """(surface, position) for the REVIEW screen, built once per capture rather than every
+        frame - converting a full-resolution (up to 4K) photo costs most of a frame's budget."""
+        if self._review_photo is None and self.captured_frame is not None:
+            if self.config.scale_review_photo:
+                box_w = int(self.screen_size[0] * SCALED_REVIEW_PHOTO_RATIO)
+                box_h = int(self.screen_size[1] * SCALED_REVIEW_PHOTO_RATIO)
+            else:
+                box_w, box_h = self.screen_size
+            surface = frame_to_surface(fit_frame(self.captured_frame, (box_w, box_h)))
+            scaled, offset = scale_to_fit(surface, (box_w, box_h))
+            box_origin = ((self.screen_size[0] - box_w) // 2, (self.screen_size[1] - box_h) // 2)
+            self._review_photo = (scaled, (box_origin[0] + offset[0], box_origin[1] + offset[1]))
+        return self._review_photo
 
     def _draw_monitor_url(self):
         surf = self.font_tiny.render(f"Monitor: {self.monitor_url}", True, MONITOR_URL_COLOR)
@@ -462,28 +489,62 @@ def main():
     from .setup_ui import SetupWindow
 
     raw_config = load_config_dict()
+    # Launched at Windows sign-in (see autostart.py): the first round skips setup and goes straight
+    # into the booth with the saved settings - an unattended booth has nobody to click Start.
+    autostart = AUTOSTART_ARG in sys.argv[1:]
 
     while True:
-        setup = SetupWindow(raw_config)
-        result = setup.run()
-        if result is None:
-            print("Setup cancelled - exiting.")
-            return
+        result = _autostart_config(raw_config) if autostart else None
+        autostarted = result is not None
+        if autostart and not autostarted:
+            print("Auto-start: saved camera never appeared - showing setup instead.")
+        autostart = False
 
-        if setup.remember_settings:
-            save_config_dict(result)
-        raw_config = result
+        if not autostarted:
+            setup = SetupWindow(raw_config)
+            result = setup.run()
+            if result is None:
+                print("Setup cancelled - exiting.")
+                return
+            if setup.remember_settings:
+                save_config_dict(result)
+            raw_config = result
         config = Config(result)
 
         try:
             app = BoothApp(config)
         except CameraError as exc:
+            if autostarted:
+                # Nobody may be watching an auto-start, so a fatal message box that exits helps no
+                # one - fall back to setup, which shows what's wrong with the camera. BoothApp had
+                # already opened its fullscreen window; close it first.
+                print(f"Auto-start: {exc} - showing setup instead.")
+                pygame.quit()
+                continue
             print(f"Fatal: {exc}")
             _show_fatal_error(str(exc))
             return
 
         if not app.run():
             return
+
+
+def _autostart_config(raw_config):
+    """The saved config, with camera_index pointed at the saved camera wherever it now sits (see
+    resolve_camera_index). Waits up to AUTOSTART_CAMERA_WAIT_S for it, since right after sign-in
+    USB cameras can still be coming up. None if it never appears."""
+    deadline = time.time() + AUTOSTART_CAMERA_WAIT_S
+    saved_index = raw_config.get("camera_index", 0)
+    saved_name = raw_config.get("camera_name", "")
+    while True:
+        names = list_camera_names()
+        index, found = resolve_camera_index(names, saved_index, saved_name)
+        # names is None when they can't be looked up at all - nothing to wait for, just try the index.
+        if names is None or (found and index < len(names)):
+            return {**raw_config, "camera_index": index}
+        if time.time() >= deadline:
+            return None
+        time.sleep(AUTOSTART_CAMERA_POLL_S)
 
 
 def _show_fatal_error(message: str):

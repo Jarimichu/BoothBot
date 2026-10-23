@@ -10,14 +10,22 @@ from tkinter import filedialog, messagebox, ttk
 
 from PIL import Image, ImageTk
 
-from . import __version__, capture_log, monitor_server, uploader
-from .camera import Camera, CameraError, list_camera_names
+from . import __version__, autostart, capture_log, monitor_server, uploader
+from .camera import CameraError, list_camera_names, open_camera_in_background, resolve_camera_index
 from .config import ROOT_DIR
 
-PREVIEW_SIZE = (480, 360)
+PREVIEW_SIZE = (480, 270)  # 16:9 like the default capture size - a 4:3 camera gets side bars
 PREVIEW_INTERVAL_MS = 33
+CAMERA_OPEN_POLL_MS = 100
 TEST_POLL_INTERVAL_MS = 200
 FALLBACK_CAMERA_COUNT = 6  # bare "Camera N" choices offered only if camera names can't be looked up
+RESOLUTION_CHOICES = [
+    ((3840, 2160), "3840 × 2160 (4K)"),
+    ((2560, 1440), "2560 × 1440"),
+    ((1920, 1080), "1920 × 1080 (Full HD)"),
+    ((1280, 720), "1280 × 720"),
+    ((640, 480), "640 × 480 (4:3)"),
+]
 COUNTDOWN_CHOICES = [3, 4, 5, 6, 7, 8, 10]
 PHOTO_REVIEW_CHOICES = [3, 4, 5, 6, 8, 10, 15]
 TELEGRAM_RETRY_CHOICES = [0, 1, 2, 3, 5, 10]
@@ -49,12 +57,19 @@ class SetupWindow:
         self.result = None
         self.remember_settings = True
         self.camera = None
+        self._camera_opening = None  # Future from open_camera_in_background while one is in flight
         self.camera_names = None  # from list_camera_names(); None if names couldn't be looked up
         self.camera_labels = []  # dropdown entries, one per camera index
         self.selected_camera_index = config_data.get("camera_index", 0)
         # Set when the saved camera_name isn't connected anymore and the saved index is being
         # shown in its place - Start asks before going ahead with the stand-in.
         self._missing_camera_name = None
+        # The requested size - what's saved, even when a camera delivers less (see _finish_opening_camera).
+        self.selected_resolution = (config_data.get("camera_width", 1920), config_data.get("camera_height", 1080))
+        self.resolution_choices = list(RESOLUTION_CHOICES)
+        if self.selected_resolution not in [size for size, _ in self.resolution_choices]:
+            width, height = self.selected_resolution
+            self.resolution_choices.insert(0, (self.selected_resolution, f"{width} × {height}"))
         self.log_trees = {}
         self.log_row_data = {}
         self.log_destination_summary_vars = {}
@@ -88,11 +103,16 @@ class SetupWindow:
         self.root.protocol("WM_DELETE_WINDOW", self._on_quit)
 
         self.camera_choice_var = tk.StringVar(value="")
+        self.resolution_var = tk.StringVar(
+            value=dict(self.resolution_choices)[self.selected_resolution]
+        )
         self.camera_status_var = tk.StringVar(value="")
         self.countdown_var = tk.IntVar(value=config_data.get("countdown_seconds", 5))
         self.photo_review_var = tk.IntVar(value=config_data.get("photo_review_seconds", 5))
         self.fullscreen_var = tk.BooleanVar(value=config_data.get("fullscreen", True))
         self.remember_settings_var = tk.BooleanVar(value=True)
+        self.autostart_var = tk.BooleanVar(value=autostart.is_enabled())
+        self.autostart_note_var = tk.StringVar(value=self._autostart_note())
         self.monitor_enabled_var = tk.BooleanVar(value=config_data.get("monitor_enabled", True))
         self.monitor_port_var = tk.IntVar(value=config_data.get("monitor_port", monitor_server.DEFAULT_PORT))
         self.monitor_show_url_var = tk.BooleanVar(value=config_data.get("monitor_show_url", False))
@@ -138,23 +158,41 @@ class SetupWindow:
         # --- Left: camera preview ---
         ttk.Label(left, text="Camera Preview", font=("Segoe UI", 12, "bold")).grid(row=0, column=0, sticky="w")
 
-        self.preview_label = ttk.Label(left, background="black")
+        # Starts on a blank PREVIEW_SIZE image so it's the right size before the first frame (the
+        # camera opens in the background) - a ttk.Label's own width= is in characters, not pixels.
+        placeholder = ImageTk.PhotoImage(Image.new("RGB", PREVIEW_SIZE, (20, 20, 20)))
+        self.preview_label = ttk.Label(left, background="black", image=placeholder)
+        self.preview_label.image = placeholder  # keep a reference so it isn't garbage-collected
         self.preview_label.grid(row=1, column=0, pady=(4, 4))
-        self.preview_label.configure(width=PREVIEW_SIZE[0])
 
-        camera_row = ttk.Frame(left)
-        camera_row.grid(row=2, column=0, sticky="ew")
-        ttk.Label(camera_row, text="Camera:").pack(side="left")
+        camera_controls = ttk.Frame(left)
+        camera_controls.grid(row=2, column=0, sticky="ew")
+        ttk.Label(camera_controls, text="Camera:").grid(row=0, column=0, sticky="w")
         self.camera_combo = ttk.Combobox(
-            camera_row, textvariable=self.camera_choice_var, state="readonly", width=34
+            camera_controls, textvariable=self.camera_choice_var, state="readonly", width=34
         )
-        self.camera_combo.pack(side="left", padx=(6, 6))
+        self.camera_combo.grid(row=0, column=1, sticky="ew", padx=6)
         self.camera_combo.bind("<<ComboboxSelected>>", lambda event: self._on_camera_selected())
-        ttk.Button(camera_row, text="Refresh", command=self._on_refresh_camera).pack(side="left")
+        self.camera_refresh_button = ttk.Button(camera_controls, text="Refresh", command=self._on_refresh_camera)
+        self.camera_refresh_button.grid(row=0, column=2, sticky="ew")
 
-        ttk.Label(left, textvariable=self.camera_status_var, foreground="#555").grid(
-            row=3, column=0, sticky="w", pady=(4, 0)
+        ttk.Label(camera_controls, text="Resolution:").grid(row=1, column=0, sticky="w", pady=(6, 0))
+        self.resolution_combo = ttk.Combobox(
+            camera_controls,
+            textvariable=self.resolution_var,
+            values=[label for _, label in self.resolution_choices],
+            state="readonly",
         )
+        self.resolution_combo.grid(row=1, column=1, sticky="ew", padx=6, pady=(6, 0))
+        self.resolution_combo.bind("<<ComboboxSelected>>", lambda event: self._on_resolution_selected())
+        self.camera_settings_button = ttk.Button(
+            camera_controls, text="Camera Settings...", command=self._on_camera_settings, state="disabled"
+        )
+        self.camera_settings_button.grid(row=1, column=2, sticky="ew", pady=(6, 0))
+
+        ttk.Label(
+            left, textvariable=self.camera_status_var, foreground="#555", wraplength=PREVIEW_SIZE[0]
+        ).grid(row=3, column=0, sticky="w", pady=(4, 0))
 
         # --- Right: tabbed settings ---
         notebook = ttk.Notebook(outer)
@@ -171,6 +209,18 @@ class SetupWindow:
         ttk.Checkbutton(
             general_tab, text="Remember these settings for next time", variable=self.remember_settings_var
         ).grid(row=row, column=0, columnspan=2, sticky="w", pady=(2, 4))
+        row += 1
+        ttk.Checkbutton(
+            general_tab,
+            text="Start BoothBot when Windows starts (goes straight into the photobooth)",
+            variable=self.autostart_var,
+            command=self._on_toggle_autostart,
+            state="normal" if autostart.is_supported() else "disabled",
+        ).grid(row=row, column=0, columnspan=2, sticky="w", pady=(2, 0))
+        row += 1
+        ttk.Label(general_tab, textvariable=self.autostart_note_var, foreground="#888", wraplength=560).grid(
+            row=row, column=0, columnspan=2, sticky="w", pady=(0, 4)
+        )
         row += 1
 
         ttk.Separator(general_tab, orient="horizontal").grid(row=row, column=0, columnspan=2, sticky="ew", pady=8)
@@ -377,7 +427,7 @@ class SetupWindow:
             self.camera_labels = self._label_cameras(self.camera_names)
         self.camera_combo.configure(values=self.camera_labels)
 
-        index, found = self._resolve_camera_index(self.camera_names, self.selected_camera_index, preferred_name)
+        index, found = resolve_camera_index(self.camera_names, self.selected_camera_index, preferred_name)
         self.selected_camera_index = index
         self._missing_camera_name = None if found else preferred_name
         self.camera_choice_var.set(self._camera_label(index))
@@ -389,17 +439,6 @@ class SetupWindow:
             f"{name} ({names[:i].count(name) + 1})" if name in names[:i] else name
             for i, name in enumerate(names)
         ]
-
-    @staticmethod
-    def _resolve_camera_index(names, saved_index, saved_name):
-        """Returns (index, found). The saved name wins over the saved index; found is False only
-        when the saved name isn't connected, in which case the saved index is the fallback."""
-        if not saved_name or names is None:
-            return saved_index, True
-        matches = [i for i, name in enumerate(names) if name == saved_name]
-        if not matches:
-            return saved_index, False
-        return (saved_index if saved_index in matches else matches[0]), True
 
     def _camera_label(self, index):
         if 0 <= index < len(self.camera_labels):
@@ -414,30 +453,64 @@ class SetupWindow:
         return ""
 
     def _open_camera(self, index):
+        """Starts opening camera `index` at the selected resolution. That takes several seconds,
+        so it happens in the background (see open_camera_in_background) with the camera controls
+        disabled until _finish_opening_camera picks the result up - which also means the selected
+        camera/resolution can't change underneath it."""
         if self.camera is not None:
             self.camera.release()
             self.camera = None
+        self.camera_status_var.set(f"Opening {self._camera_label(index)}...")
+        self._set_camera_controls_enabled(False)
+        self._camera_opening = open_camera_in_background(index, *self.selected_resolution)
+        self.root.after(CAMERA_OPEN_POLL_MS, self._finish_opening_camera)
+
+    def _finish_opening_camera(self):
+        future = self._camera_opening
+        if future is None:  # handed off by _cleanup
+            return
+        if not future.done():
+            self.root.after(CAMERA_OPEN_POLL_MS, self._finish_opening_camera)
+            return
+        self._camera_opening = None
         try:
-            self.camera = Camera(index)
+            self.camera = future.result()
         except CameraError:
             self.camera = None
+        self._set_camera_controls_enabled(True)
 
-        label = self._camera_label(index)
+        label = self._camera_label(self.selected_camera_index)
+        size = ""
+        if self.camera is not None:
+            size = f"{self.camera.width} × {self.camera.height}"
+            if (self.camera.width, self.camera.height) != self.selected_resolution:
+                size += " (asked for {} × {})".format(*self.selected_resolution)
+
         if self._missing_camera_name:
             status = f"{self._missing_camera_name} not found"
             if self.camera is not None:
-                status += f" - showing {label} instead"
+                status += f" - showing {label} instead, at {size}"
         elif self.camera is not None:
-            status = f"{label}: connected"
+            status = f"{label}: connected at {size}"
         elif self.camera_names == []:
             status = "No cameras found - plug one in, then click Refresh"
         else:
             status = f"{label}: not available"
         self.camera_status_var.set(status)
 
+    def _set_camera_controls_enabled(self, enabled):
+        flag = "!disabled" if enabled else "disabled"
+        for widget in (self.camera_combo, self.resolution_combo, self.camera_refresh_button):
+            widget.state([flag])
+        self.camera_settings_button.state(["!disabled" if enabled and self.camera is not None else "disabled"])
+
     def _on_camera_selected(self):
         self.selected_camera_index = self.camera_combo.current()
         self._missing_camera_name = None
+        self._open_camera(self.selected_camera_index)
+
+    def _on_resolution_selected(self):
+        self.selected_resolution = self.resolution_choices[self.resolution_combo.current()][0]
         self._open_camera(self.selected_camera_index)
 
     def _on_refresh_camera(self):
@@ -445,6 +518,33 @@ class SetupWindow:
         # Refresh brings it back rather than sticking with the stand-in.
         self._scan_cameras(self._missing_camera_name or self._selected_camera_name())
         self._open_camera(self.selected_camera_index)
+
+    def _on_camera_settings(self):
+        if self.camera is None or not self.camera.open_settings_dialog():
+            messagebox.showinfo("Camera Settings", "This camera doesn't offer a settings window.")
+
+    def _on_toggle_autostart(self):
+        """Applies right away rather than on Start - it's a Windows setting, not part of config.json,
+        so "Remember these settings" doesn't govern it."""
+        try:
+            autostart.set_enabled(self.autostart_var.get())
+        except OSError as exc:
+            messagebox.showerror("Start with Windows", f"Couldn't change the Windows startup setting:\n\n{exc}")
+        self.autostart_var.set(autostart.is_enabled())
+        self.autostart_note_var.set(self._autostart_note())
+
+    @staticmethod
+    def _autostart_note():
+        registered = autostart.registered_command()
+        if registered is not None and not autostart.is_enabled():
+            return (
+                f"A different copy of BoothBot is set to start instead ({registered}) - "
+                "check this to switch it to this one."
+            )
+        return (
+            "Applies right away. It starts when Windows signs in - for a booth that's just powered "
+            "on, turn on automatic sign-in in Windows too."
+        )
 
     def _on_browse_logo(self):
         path = filedialog.askopenfilename(
@@ -886,12 +986,11 @@ class SetupWindow:
         return f"{minutes}:{secs:02d}"
 
     def _update_preview(self):
-        frame = self.camera.read_frame_rgb() if self.camera is not None else None
+        frame = self.camera.read_frame_rgb(fit_within=PREVIEW_SIZE) if self.camera is not None else None
         self.camera_ok = frame is not None
         self.camera_checked_at = datetime.now()
         if frame is not None:
             image = Image.fromarray(frame)
-            image.thumbnail(PREVIEW_SIZE, Image.LANCZOS)
             canvas = Image.new("RGB", PREVIEW_SIZE, (20, 20, 20))
             offset = ((PREVIEW_SIZE[0] - image.width) // 2, (PREVIEW_SIZE[1] - image.height) // 2)
             canvas.paste(image, offset)
@@ -935,6 +1034,9 @@ class SetupWindow:
     # ---------- Actions ----------
 
     def _on_start(self):
+        if self._camera_opening is not None:
+            messagebox.showinfo("Camera still starting", "The camera is still starting up - give it a few seconds.")
+            return
         label = self._camera_label(self.selected_camera_index)
         if self.camera is None:
             proceed = messagebox.askyesno(
@@ -961,6 +1063,8 @@ class SetupWindow:
             "camera_name": self._selected_camera_name()
             or self._missing_camera_name
             or self.initial_config.get("camera_name", ""),
+            "camera_width": self.selected_resolution[0],
+            "camera_height": self.selected_resolution[1],
             "countdown_seconds": self.countdown_var.get(),
             "photo_review_seconds": self.photo_review_var.get(),
             "fullscreen": self.fullscreen_var.get(),
@@ -995,6 +1099,14 @@ class SetupWindow:
         if self.camera is not None:
             self.camera.release()
             self.camera = None
+        if self._camera_opening is not None:
+            # Still opening as the window closes - release it whenever it lands (on the worker
+            # thread), so it doesn't keep holding the device. Not waited for: only Quit gets here
+            # mid-open, since Start refuses until the camera is ready.
+            self._camera_opening.add_done_callback(
+                lambda future: future.exception() is None and future.result().release()
+            )
+            self._camera_opening = None
         if self.monitor is not None:
             self.monitor.stop()
             self.monitor = None

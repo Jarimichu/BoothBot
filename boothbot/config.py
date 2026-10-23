@@ -18,6 +18,10 @@ DEFAULTS = {
     # Saved alongside camera_index so setup can re-find the same camera after its index shifts
     # (adding/removing any camera, including virtual ones like OBS's, renumbers the rest).
     "camera_name": "",
+    # Requested capture size - the camera may deliver less (see Camera.width/height). Every photo
+    # is a frame at this size, so it also sets the photos' aspect ratio.
+    "camera_width": 1920,
+    "camera_height": 1080,
     "countdown_seconds": 5,
     "capture_key": "space",
     "quit_key": "escape",
