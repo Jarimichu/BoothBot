@@ -26,6 +26,8 @@ DEFAULTS = {
     "capture_key": "space",
     "quit_key": "escape",
     "fullscreen": True,
+    # Stops Windows sleeping/turning the screen off while BoothBot is open - see keep_awake.py.
+    "keep_awake": True,
     "photos_dir": "photos",
     "photo_review_seconds": 5,
     "start_message": "Press button to start photobooth!",

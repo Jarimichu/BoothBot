@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pygame
 
-from . import __version__, capture_log, uploader
+from . import __version__, capture_log, keep_awake, uploader
 from .autostart import AUTOSTART_ARG
 from .camera import CameraError, fit_frame, list_camera_names, open_camera_in_background, resolve_camera_index
 from .monitor_server import MonitorServer
@@ -53,6 +53,10 @@ class BoothApp:
         self.config = config
 
         pygame.init()
+        # SDL asks Windows to keep the screen on by itself whenever it's running (and blocks the
+        # screensaver) - with keep_awake off, drop that too, so Windows' own sleep/screen-off settings
+        # apply here as well, as the setup checkbox says. With it on, keep_awake.py holds its own.
+        pygame.display.set_allow_screensaver(not config.keep_awake)
         pygame.display.set_caption(f"BoothBot v{__version__}")
         flags = pygame.FULLSCREEN if config.fullscreen else 0
         self.screen = pygame.display.set_mode((0, 0) if config.fullscreen else (1280, 720), flags)
@@ -492,6 +496,8 @@ def main():
     # Launched at Windows sign-in (see autostart.py): the first round skips setup and goes straight
     # into the booth with the saved settings - an unattended booth has nobody to click Start.
     autostart = AUTOSTART_ARG in sys.argv[1:]
+    # From the very start - covers the setup screen and an auto-start's wait for its camera too.
+    keep_awake.set_enabled(raw_config.get("keep_awake", True))
 
     while True:
         result = _autostart_config(raw_config) if autostart else None
@@ -510,6 +516,7 @@ def main():
                 save_config_dict(result)
             raw_config = result
         config = Config(result)
+        keep_awake.set_enabled(config.keep_awake)  # whatever setup ended with, saved or not
 
         try:
             app = BoothApp(config)

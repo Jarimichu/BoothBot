@@ -10,7 +10,7 @@ from tkinter import filedialog, messagebox, ttk
 
 from PIL import Image, ImageTk
 
-from . import __version__, autostart, capture_log, monitor_server, uploader
+from . import __version__, autostart, capture_log, keep_awake, monitor_server, uploader
 from .camera import CameraError, list_camera_names, open_camera_in_background, resolve_camera_index
 from .config import ROOT_DIR
 
@@ -113,6 +113,7 @@ class SetupWindow:
         self.remember_settings_var = tk.BooleanVar(value=True)
         self.autostart_var = tk.BooleanVar(value=autostart.is_enabled())
         self.autostart_note_var = tk.StringVar(value=self._autostart_note())
+        self.keep_awake_var = tk.BooleanVar(value=config_data.get("keep_awake", True))
         self.monitor_enabled_var = tk.BooleanVar(value=config_data.get("monitor_enabled", True))
         self.monitor_port_var = tk.IntVar(value=config_data.get("monitor_port", monitor_server.DEFAULT_PORT))
         self.monitor_show_url_var = tk.BooleanVar(value=config_data.get("monitor_show_url", False))
@@ -221,6 +222,23 @@ class SetupWindow:
         ttk.Label(general_tab, textvariable=self.autostart_note_var, foreground="#888", wraplength=560).grid(
             row=row, column=0, columnspan=2, sticky="w", pady=(0, 4)
         )
+        row += 1
+        # Applies right away so it covers this screen too; saved like any other setting.
+        ttk.Checkbutton(
+            general_tab,
+            text="Keep the PC and screen awake while BoothBot is open",
+            variable=self.keep_awake_var,
+            command=lambda: keep_awake.set_enabled(self.keep_awake_var.get()),
+            state="normal" if keep_awake.is_supported() else "disabled",
+        ).grid(row=row, column=0, columnspan=2, sticky="w", pady=(2, 0))
+        row += 1
+        ttk.Label(
+            general_tab,
+            text="Windows' own sleep and screen-off settings aren't changed - they apply again once "
+            "BoothBot closes. Closing a laptop's lid still puts it to sleep.",
+            foreground="#888",
+            wraplength=560,
+        ).grid(row=row, column=0, columnspan=2, sticky="w", pady=(0, 4))
         row += 1
 
         ttk.Separator(general_tab, orient="horizontal").grid(row=row, column=0, columnspan=2, sticky="ew", pady=8)
@@ -1068,6 +1086,7 @@ class SetupWindow:
             "countdown_seconds": self.countdown_var.get(),
             "photo_review_seconds": self.photo_review_var.get(),
             "fullscreen": self.fullscreen_var.get(),
+            "keep_awake": self.keep_awake_var.get(),
             "start_message": self.start_message_var.get().strip(),
             "start_logo_path": self.start_logo_path_var.get().strip(),
             "prompt_message": self.prompt_message_var.get().strip(),
