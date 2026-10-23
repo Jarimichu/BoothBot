@@ -2,6 +2,11 @@
 
 All notable changes to BoothBot are documented in this file.
 
+## [Unreleased]
+
+### Fixed
+- Releases build and publish themselves again. The GitHub Actions release workflow added in 1.7.3 (push a `vX.Y.Z` tag → build `BoothBot.exe` → publish a GitHub Release with this changelog's section as its notes) had been deleted from the repository along with its helper scripts, so v1.8.0 was published by hand. It's restored as it was, with its GitHub actions updated to their current versions. It now builds with the same Python (3.12) and PyInstaller (6.22.3) versions as local builds, so the published exe is built the same way as the one that was tested. The README now has a short Releases section.
+
 ## [1.8.0] - 2026-10-23
 
 ### Added

@@ -60,3 +60,12 @@ This produces `BoothBot.exe` right in the project root - a single windowed (no c
 To have it start automatically when the booth PC boots, put a shortcut to `BoothBot.exe` in the Windows Startup folder (`Win+R` -> `shell:startup`).
 
 If you change the code, rebuild with `pyinstaller BoothBot.spec --distpath .` (edit `BoothBot.spec` directly if you need to change build options like the app name or icon). `BoothBot.exe` is gitignored, same as `build/` - it's a generated artifact, not source.
+
+### Releases
+
+Releases build themselves. Bump the version in `boothbot/__init__.py`, `version_info.txt` and the header above, add a section for it to `CHANGELOG.md`, and commit. Then push a tag for it:
+```
+git tag -a vX.Y.Z -m "BoothBot vX.Y.Z"
+git push origin vX.Y.Z
+```
+GitHub Actions (`.github/workflows/release.yml`) then builds `BoothBot.exe` on a clean Windows machine and publishes a GitHub Release with the exe attached and that version's changelog section as its notes. It first checks that the tag matches `boothbot/__init__.py` and stops before building if it doesn't, so a forgotten version bump can't produce a mislabelled release. Push one tag at a time: GitHub runs no workflows for a push of more than three tags at once.
