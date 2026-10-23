@@ -1,4 +1,4 @@
-"""Fails the release build if the pushed tag doesn't match boothbot/__init__.py's __version__ -
+"""Stops a release if the tag doesn't match boothbot/__init__.py's __version__ -
 catches the "forgot to bump the version before tagging" mistake before it publishes a mismatched
 release. Usage: python check_version.py v1.7.2"""
 import re

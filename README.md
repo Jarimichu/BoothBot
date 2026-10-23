@@ -64,9 +64,12 @@ If you change the code, rebuild with `pyinstaller BoothBot.spec --distpath .` (e
 
 ### Releases
 
-Releases build themselves. Bump the version in `boothbot/__init__.py`, `version_info.txt` and the header above, add a section for it to `CHANGELOG.md`, and commit. Then push a tag for it:
+Releases are published by hand with the [GitHub CLI](https://cli.github.com/) (`gh`), using the `BoothBot.exe` you built and tested yourself. Bump the version in `boothbot/__init__.py`, `version_info.txt` and the header above, add a section for it to `CHANGELOG.md`, rebuild and test the exe, then commit and push. Then tag that commit and publish:
 ```
+python .github/scripts/check_version.py vX.Y.Z
 git tag -a vX.Y.Z -m "BoothBot vX.Y.Z"
 git push origin vX.Y.Z
+python .github/scripts/extract_release_notes.py vX.Y.Z
+gh release create vX.Y.Z BoothBot.exe --verify-tag --title "BoothBot vX.Y.Z" --notes-file release_notes.md
 ```
-GitHub Actions (`.github/workflows/release.yml`) then builds `BoothBot.exe` on a clean Windows machine and publishes a GitHub Release with the exe attached and that version's changelog section as its notes. It first checks that the tag matches `boothbot/__init__.py` and stops before building if it doesn't, so a forgotten version bump can't produce a mislabelled release. Push one tag at a time: GitHub runs no workflows for a push of more than three tags at once.
+`check_version.py` stops if the tag doesn't match `boothbot/__init__.py`, so a forgotten version bump can't produce a mislabelled release. `extract_release_notes.py` writes that version's `CHANGELOG.md` section to `release_notes.md` (gitignored) for the release notes.

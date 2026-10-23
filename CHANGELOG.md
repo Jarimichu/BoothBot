@@ -21,8 +21,8 @@ All notable changes to BoothBot are documented in this file.
 - A live **preview of the start page** at the bottom of the Start Page tab, drawn by the same code as the booth at the booth screen's proportions. It updates as you change any setting. When no photos from today can be shown yet, it uses the most recent photos as samples so the layout can still be judged.
 - **Show today's photos on the monitor page** (General tab, off by default, because the page has no login). With it on, the remote monitor shows thumbnails of the newest photos the start page may show, with the same rules. Only photos on that list are ever served, so a hidden photo, one from another day, or any other file can't be fetched by guessing its name.
 
-### Fixed
-- Releases build and publish themselves again. The GitHub Actions release workflow added in 1.7.3 (push a `vX.Y.Z` tag → build `BoothBot.exe` → publish a GitHub Release with this changelog's section as its notes) had been deleted from the repository along with its helper scripts, so v1.8.0 was published by hand. It's restored as it was, with its GitHub actions updated to their current versions. It now builds with the same Python (3.12) and PyInstaller (6.22.3) versions as local builds, so the published exe is built the same way as the one that was tested. The README now has a short Releases section.
+### Changed
+- Releases are published by hand, without GitHub Actions. The automatic release workflow added in 1.7.3 had been deleted before 1.8.0; it was briefly restored and is now removed for good, so publishing a release doesn't depend on Actions minutes. The exe attached to a release is the one built and tested locally. Its helper scripts are back and still do the checks: `check_version.py` makes sure the tag matches the app's version, and `extract_release_notes.py` pulls that version's section of this changelog for the release notes. The README has a new Releases section with the steps.
 
 ## [1.8.0] - 2026-10-23
 
