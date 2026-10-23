@@ -6,7 +6,7 @@ from datetime import datetime, timedelta
 
 import pygame
 
-from . import __version__, capture_log, keep_awake, photo_gallery, uploader
+from . import __version__, capture_log, keep_awake, photo_gallery, updater, uploader
 from .autostart import AUTOSTART_ARG
 from .camera import CameraError, fit_frame, list_camera_names, open_camera_in_background, resolve_camera_index
 from .drawing import draw_centered_text, draw_wrapped_centered_text, frame_to_surface, scale_to_fit
@@ -466,6 +466,7 @@ def main():
     autostart = AUTOSTART_ARG in sys.argv[1:]
     # From the very start - covers the setup screen and an auto-start's wait for its camera too.
     keep_awake.set_enabled(raw_config.get("keep_awake", True))
+    updater.remove_leftovers()  # the previous version, if this run is the restart after an update
 
     while True:
         result = _autostart_config(raw_config) if autostart else None
@@ -483,6 +484,13 @@ def main():
             if setup.remember_settings:
                 save_config_dict(result)
             raw_config = result
+            if setup.restart_for_update:
+                # Setup has already let go of the camera and the monitor's port for the new copy.
+                try:
+                    updater.relaunch()
+                except OSError as exc:
+                    _show_fatal_error(f"The update is installed, but it couldn't be started ({exc}). Open BoothBot again.")
+                return
         config = Config(result)
         keep_awake.set_enabled(config.keep_awake)  # whatever setup ended with, saved or not
 

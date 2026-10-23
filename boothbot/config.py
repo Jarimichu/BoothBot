@@ -28,6 +28,9 @@ DEFAULTS = {
     "fullscreen": True,
     # Stops Windows sleeping/turning the screen off while BoothBot is open - see keep_awake.py.
     "keep_awake": True,
+    # Asks GitHub for a newer release whenever the setup screen opens - see updater.py. Never
+    # during the booth or an auto-start, and nothing installs until the operator clicks Update.
+    "check_for_updates": True,
     "photos_dir": "photos",
     "photo_review_seconds": 5,
     "start_message": "Press button to start photobooth!",

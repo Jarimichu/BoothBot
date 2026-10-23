@@ -4,6 +4,15 @@ All notable changes to BoothBot are documented in this file.
 
 ## [Unreleased]
 
+## [1.10.0] - 2026-10-23
+
+### Added
+- **Built-in updates from GitHub.** When the setup screen opens, BoothBot asks GitHub in the background whether a newer release is out, and the bottom of the window shows the answer. Offline, it just says it couldn't check, with nothing in red. **Check for Updates** asks again. When there's a newer version, **Update...** shows its release notes, and **Download and Install** downloads the new `BoothBot.exe` with a progress bar while setup keeps working. The download is checked against the SHA-256 checksum GitHub publishes for the file, put in place of the running exe, and BoothBot offers to restart into it.
+  - Settings, photos and logs are untouched, and the exe keeps its name and folder, so "Start BoothBot when Windows starts" and any shortcuts keep working. Changes made on the setup screen before restarting are saved first, the same way Start Photobooth saves them.
+  - Nothing is ever installed without a click, and nothing is checked during the photobooth or when started with Windows. Starting the photobooth or quitting during a download cancels it. **Check GitHub for a newer version when this screen opens** (General tab, on by default) turns off the automatic check.
+  - From source, **Update...** shows the release notes and links to the release instead. Update with `git pull`.
+  - This works from 1.10.0 onward. Copies of 1.9.0 and older have to be replaced by hand one last time.
+
 ## [1.9.0] - 2026-10-23
 
 ### Added

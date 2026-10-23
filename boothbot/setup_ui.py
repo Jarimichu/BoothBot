@@ -5,6 +5,7 @@ import os
 import queue
 import threading
 import tkinter as tk
+import webbrowser
 from datetime import datetime
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
@@ -12,7 +13,9 @@ from tkinter import filedialog, messagebox, ttk
 import pygame
 from PIL import Image, ImageTk
 
-from . import __version__, autostart, capture_log, keep_awake, monitor_server, photo_gallery, start_screen, uploader
+from . import (
+    __version__, autostart, capture_log, keep_awake, monitor_server, photo_gallery, start_screen, updater, uploader
+)
 from .camera import CameraError, list_camera_names, open_camera_in_background, resolve_camera_index
 from .config import ROOT_DIR
 
@@ -20,6 +23,8 @@ PREVIEW_SIZE = (480, 270)  # 16:9 like the default capture size - a 4:3 camera g
 PREVIEW_INTERVAL_MS = 33
 CAMERA_OPEN_POLL_MS = 100
 TEST_POLL_INTERVAL_MS = 200
+UPDATE_POLL_INTERVAL_MS = 200
+UPDATE_STATUS_LIMIT = 90  # characters - the status shares the bottom row with the buttons
 FALLBACK_CAMERA_COUNT = 6  # bare "Camera N" choices offered only if camera names can't be looked up
 RESOLUTION_CHOICES = [
     ((3840, 2160), "3840 × 2160 (4K)"),
@@ -92,6 +97,8 @@ class SetupWindow:
         self.initial_config = config_data
         self.result = None
         self.remember_settings = True
+        # Set when the window closes to restart into a just-installed update - see app.main().
+        self.restart_for_update = False
         self.camera = None
         self._camera_opening = None  # Future from open_camera_in_background while one is in flight
         self.camera_names = None  # from list_camera_names(); None if names couldn't be looked up
@@ -122,6 +129,14 @@ class SetupWindow:
         self._test_status_labels = {}
         self._test_buttons = {}
         self._lan_ip = monitor_server.get_lan_ip()
+
+        # Update check/download (see the Updates section) - results come back through the queue
+        # like the test messages'. _update_progress is a plain tuple the download thread replaces.
+        self._update_queue = queue.Queue()
+        self._update_release = None  # the newer release found by the last check
+        self._update_check_manual = False
+        self._update_cancel = threading.Event()
+        self._update_progress = None  # (bytes done, total) while downloading, else None
 
         previews = start_screen.preview_settings(config_data)
         # (show photos, delay, uploaded only) for _monitor_photos on the monitor's handler thread -
@@ -167,6 +182,8 @@ class SetupWindow:
         self.autostart_var = tk.BooleanVar(value=autostart.is_enabled())
         self.autostart_note_var = tk.StringVar(value=self._autostart_note())
         self.keep_awake_var = tk.BooleanVar(value=config_data.get("keep_awake", True))
+        self.check_updates_var = tk.BooleanVar(value=config_data.get("check_for_updates", True))
+        self.update_status_var = tk.StringVar(value="")
         self.monitor_enabled_var = tk.BooleanVar(value=config_data.get("monitor_enabled", True))
         self.monitor_port_var = tk.IntVar(value=config_data.get("monitor_port", monitor_server.DEFAULT_PORT))
         self.monitor_show_url_var = tk.BooleanVar(value=config_data.get("monitor_show_url", False))
@@ -209,6 +226,11 @@ class SetupWindow:
         self._open_camera(self.selected_camera_index)
         self._update_preview()
         self._poll_test_results()
+        self._poll_update_results()
+        if updater.installed_release() is not None:
+            self._show_update_installed(updater.installed_release())
+        elif self.check_updates_var.get():
+            self._start_update_check(manual=False)
 
     # ---------- UI construction ----------
 
@@ -299,6 +321,18 @@ class SetupWindow:
             general_tab,
             text="Windows' own sleep and screen-off settings aren't changed - they apply again once "
             "BoothBot closes. Closing a laptop's lid still puts it to sleep.",
+            foreground="#888",
+            wraplength=560,
+        ).grid(row=row, column=0, columnspan=2, sticky="w", pady=(0, 4))
+        row += 1
+        ttk.Checkbutton(
+            general_tab, text="Check GitHub for a newer version when this screen opens", variable=self.check_updates_var
+        ).grid(row=row, column=0, columnspan=2, sticky="w", pady=(2, 0))
+        row += 1
+        ttk.Label(
+            general_tab,
+            text="Only checks - nothing is downloaded or installed until you click Update at the bottom of "
+            "this window. Never checks during the photobooth or when started with Windows.",
             foreground="#888",
             wraplength=560,
         ).grid(row=row, column=0, columnspan=2, sticky="w", pady=(0, 4))
@@ -441,6 +475,12 @@ class SetupWindow:
         button_row = ttk.Frame(outer)
         button_row.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(16, 0))
         ttk.Label(button_row, text=f"v{__version__}", foreground="#888").pack(side="left")
+        # One button whose job follows the update's progress (see _set_update_button).
+        self.update_button = ttk.Button(button_row, text="Check for Updates", command=self._on_check_for_updates)
+        self.update_button.pack(side="left", padx=(8, 0))
+        self.update_status_label = ttk.Label(button_row, textvariable=self.update_status_var, foreground=STATUS_COLOR_IDLE)
+        self.update_status_label.pack(side="left", padx=(8, 0))
+        self.update_progress = ttk.Progressbar(button_row, length=160, maximum=100)  # packed only while downloading
         ttk.Button(button_row, text="Quit", command=self._on_quit).pack(side="right", padx=(8, 0))
         ttk.Button(button_row, text="Start Photobooth", command=self._on_start).pack(side="right")
 
@@ -944,6 +984,184 @@ class SetupWindow:
             self._sync_test_buttons()
         self.root.after(TEST_POLL_INTERVAL_MS, self._poll_test_results)
 
+    # ---------- Updates ----------
+
+    def _set_update_status(self, text, color=STATUS_COLOR_IDLE):
+        if len(text) > UPDATE_STATUS_LIMIT:
+            text = text[:UPDATE_STATUS_LIMIT - 3] + "..."
+        self.update_status_var.set(text)
+        self.update_status_label.configure(foreground=color)
+
+    def _set_update_button(self, text, command, enabled=True):
+        self.update_button.configure(text=text, command=command, state="normal" if enabled else "disabled")
+
+    def _on_check_for_updates(self):
+        self._start_update_check(manual=True)
+
+    def _start_update_check(self, manual):
+        """manual = the button (asks GitHub even if it was just asked, and shows failures in red);
+        otherwise it's the quiet check as the window opens."""
+        self._update_check_manual = manual
+        self._set_update_status("Checking for updates...")
+        self._set_update_button("Check for Updates", self._on_check_for_updates, enabled=False)
+
+        def work():
+            try:
+                self._update_queue.put(("checked", updater.check_latest(force=manual)))
+            except updater.UpdateError as exc:
+                self._update_queue.put(("check_failed", str(exc)))
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _poll_update_results(self):
+        while True:
+            try:
+                kind, value = self._update_queue.get_nowait()
+            except queue.Empty:
+                break
+            if kind == "checked":
+                self._show_update_check(value)
+            elif kind == "check_failed":
+                color = STATUS_COLOR_FAILURE if self._update_check_manual else STATUS_COLOR_IDLE
+                self._set_update_status(f"Couldn't check for updates: {value}", color)
+                self._set_update_button("Check for Updates", self._on_check_for_updates)
+            elif kind == "downloaded":
+                self._finish_update(value)
+            elif kind == "download_failed":
+                self._end_download()
+                self._set_update_status(f"Update failed: {value}", STATUS_COLOR_FAILURE)
+                self._set_update_button("Update...", self._on_show_update)
+            elif kind == "cancelled":
+                self._end_download()
+                self._set_update_status("Update cancelled")
+                self._set_update_button("Update...", self._on_show_update)
+
+        progress = self._update_progress
+        if progress is not None:
+            done, total = progress
+            if total:
+                self.update_progress.configure(value=done * 100 / total)
+                self._set_update_status(
+                    f"Downloading {self._update_release.tag}... {done / 2**20:.0f} of {total / 2**20:.0f} MB"
+                )
+        self.root.after(UPDATE_POLL_INTERVAL_MS, self._poll_update_results)
+
+    def _show_update_check(self, release):
+        self._update_release = release
+        if release is None:
+            self._set_update_status(f"BoothBot is up to date (v{__version__})")
+            self._set_update_button("Check for Updates", self._on_check_for_updates)
+        else:
+            self._set_update_status(f"BoothBot {release.tag} is available", STATUS_COLOR_SUCCESS)
+            self._set_update_button("Update...", self._on_show_update)
+
+    def _on_show_update(self):
+        """What's new in the release, with the way to get it: download and install when this is the
+        exe and the release has one attached, otherwise a link to the release page."""
+        release = self._update_release
+        installable = updater.can_self_update() and release.asset_url is not None
+        if installable:
+            how = (
+                f"Downloads {release.asset_size / 2**20:.0f} MB from GitHub, then BoothBot restarts into the "
+                "new version. Settings, photos and logs are kept."
+            )
+        elif updater.can_self_update():
+            how = f"This release has no {updater.ASSET_NAME} attached - get it from the release page."
+        else:
+            how = "BoothBot is running from source - run git pull in its folder to update."
+
+        dialog = tk.Toplevel(self.root)
+        dialog.title(f"BoothBot {release.tag}")
+        dialog.transient(self.root)
+        dialog.resizable(False, False)
+        frame = ttk.Frame(dialog, padding=16)
+        frame.grid(row=0, column=0, sticky="nsew")
+        ttk.Label(
+            frame, text=f"BoothBot {release.tag} is available - you have v{__version__}.", font=("Segoe UI", 11, "bold")
+        ).grid(row=0, column=0, columnspan=2, sticky="w")
+        notes = tk.Text(frame, width=90, height=20, wrap="word", font=("Segoe UI", 9), padx=6, pady=6)
+        notes.insert("1.0", self._plain_release_notes(release.notes) or "No release notes.")
+        notes.configure(state="disabled")
+        notes.grid(row=1, column=0, sticky="nsew", pady=(8, 8))
+        scrollbar = ttk.Scrollbar(frame, orient="vertical", command=notes.yview)
+        scrollbar.grid(row=1, column=1, sticky="ns", pady=(8, 8))
+        notes.configure(yscrollcommand=scrollbar.set)
+        ttk.Label(frame, text=how, wraplength=600).grid(row=2, column=0, columnspan=2, sticky="w")
+
+        buttons = ttk.Frame(frame)
+        buttons.grid(row=3, column=0, columnspan=2, sticky="e", pady=(12, 0))
+        if installable:
+            ttk.Button(buttons, text="Not Now", command=dialog.destroy).pack(side="right", padx=(8, 0))
+            ttk.Button(
+                buttons, text="Download and Install", command=lambda: (dialog.destroy(), self._start_download())
+            ).pack(side="right")
+        else:
+            ttk.Button(buttons, text="Close", command=dialog.destroy).pack(side="right", padx=(8, 0))
+            ttk.Button(buttons, text="Open Release Page", command=lambda: webbrowser.open(release.page_url)).pack(
+                side="right"
+            )
+        dialog.grab_set()
+
+    @staticmethod
+    def _plain_release_notes(notes):
+        """The release notes are CHANGELOG markdown - drop the markup a plain Text widget would show
+        literally (headings' #s, **bold**, `code`)."""
+        lines = [line.lstrip("#").strip() if line.startswith("#") else line for line in notes.splitlines()]
+        return "\n".join(lines).replace("**", "").replace("`", "").strip()
+
+    def _start_download(self):
+        release = self._update_release
+        cancel = self._update_cancel = threading.Event()
+        self._update_progress = (0, release.asset_size)
+        self.update_progress.configure(value=0)
+        self.update_progress.pack(side="left", padx=(8, 0))
+        self._set_update_status(f"Downloading {release.tag}...")
+        self._set_update_button("Cancel", self._on_cancel_download)
+
+        def progress(done, total):
+            self._update_progress = (done, total)
+
+        def work():
+            try:
+                self._update_queue.put(("downloaded", updater.download(release, progress, cancel)))
+            except updater.UpdateCancelled:
+                self._update_queue.put(("cancelled", None))
+            except updater.UpdateError as exc:
+                self._update_queue.put(("download_failed", str(exc)))
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _on_cancel_download(self):
+        self._update_cancel.set()
+        self._set_update_button("Cancel", self._on_cancel_download, enabled=False)
+
+    def _end_download(self):
+        self._update_progress = None
+        self.update_progress.pack_forget()
+
+    def _finish_update(self, downloaded):
+        """On the main thread, so the swap can't happen behind a window that's already closing."""
+        self._end_download()
+        release = self._update_release
+        try:
+            updater.install(downloaded, release)
+        except updater.UpdateError as exc:
+            self._set_update_status(f"Update failed: {exc}", STATUS_COLOR_FAILURE)
+            self._set_update_button("Update...", self._on_show_update)
+            return
+        self._show_update_installed(release)
+        if messagebox.askyesno(
+            "Update installed",
+            f"BoothBot {release.tag} is installed. Restart now to start using it?\n\n"
+            "Otherwise it starts the next time BoothBot is opened.",
+        ):
+            # Not from inside this poll, which would schedule itself again on the closed window.
+            self.root.after_idle(self._on_restart_for_update)
+
+    def _show_update_installed(self, release):
+        self._set_update_status(f"{release.tag} is installed - restart BoothBot to use it", STATUS_COLOR_SUCCESS)
+        self._set_update_button("Restart to Update", self._on_restart_for_update)
+
     # ---------- Logs tab ----------
 
     def _on_open_log_folder(self):
@@ -1435,7 +1653,22 @@ class SetupWindow:
             if not proceed:
                 return
 
-        self.result = {
+        self.result = self._collect_settings()
+        self.remember_settings = self.remember_settings_var.get()
+        self._cleanup()
+        self.root.destroy()
+
+    def _on_restart_for_update(self):
+        """Closes setup for app.main() to start the installed update - keeping what's been changed
+        here, saved like Start would (if "Remember these settings" is on)."""
+        self.result = self._collect_settings()
+        self.remember_settings = self.remember_settings_var.get()
+        self.restart_for_update = True
+        self._cleanup()
+        self.root.destroy()
+
+    def _collect_settings(self):
+        return {
             **self.initial_config,
             "camera_index": self.selected_camera_index,
             # Falls back to the previously saved name when there's no connected, named camera to
@@ -1449,6 +1682,7 @@ class SetupWindow:
             "photo_review_seconds": self.photo_review_var.get(),
             "fullscreen": self.fullscreen_var.get(),
             "keep_awake": self.keep_awake_var.get(),
+            "check_for_updates": self.check_updates_var.get(),
             "start_message": self.start_message_var.get().strip(),
             "start_logo_path": self.start_logo_path_var.get().strip(),
             **self._preview_config_values(),
@@ -1469,9 +1703,6 @@ class SetupWindow:
             "monitor_show_url": self.monitor_show_url_var.get(),
             "monitor_show_photos": self.monitor_show_photos_var.get(),
         }
-        self.remember_settings = self.remember_settings_var.get()
-        self._cleanup()
-        self.root.destroy()
 
     def _on_quit(self):
         self.result = None
@@ -1479,6 +1710,9 @@ class SetupWindow:
         self.root.destroy()
 
     def _cleanup(self):
+        # A download still running is abandoned (its thread deletes the partial file) - closing the
+        # window is the only way out of setup, and the update is never installed behind it.
+        self._update_cancel.set()
         if self.camera is not None:
             self.camera.release()
             self.camera = None
