@@ -2,6 +2,12 @@
 
 All notable changes to BoothBot are documented in this file.
 
+## [1.8.0] - 2026-10-23
+
+### Changed
+- The setup screen's camera dropdown now lists cameras by name (e.g. "Logitech BRIO") instead of a bare index 0-5, so there's no more guessing which number is which device. Names are read straight from Windows' DirectShow device list - the same list, in the same order, that the camera itself is opened from - so no new dependency was added. Identical webcams are numbered ("Logitech C920 (2)") so they can still be told apart. **Refresh** now also re-scans for cameras, so one plugged in after setup opened shows up without restarting. If names can't be read for some reason, the dropdown falls back to "Camera 0"-"Camera 5".
+- The chosen camera is now remembered by name as well as index (new `camera_name` setting). Camera indices shift whenever any camera is added or removed - including virtual ones like OBS's or Elgato's, which commonly take index 0 and push a real webcam to 1 - so setup now re-selects the saved camera wherever it ends up. If the saved camera isn't connected at all, setup shows the camera at the old index as a stand-in, says so under the preview, and asks before starting the photobooth with it. Existing configs without a saved name keep using their saved index.
+
 ## [1.7.3] - 2026-08-04
 
 ### Added

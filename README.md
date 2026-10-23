@@ -1,5 +1,5 @@
 # BoothBot
-**Version 1.7.3** ([changelog](CHANGELOG.md))
+**Version 1.8.0** ([changelog](CHANGELOG.md))
 
 Button-triggered photobooth for events - snaps a photo from a webcam after a countdown and auto-posts it to Telegram/Discord.
 
@@ -15,7 +15,7 @@ Button-triggered photobooth for events - snaps a photo from a webcam after a cou
    ```
    python run.py
    ```
-   A **setup window** opens first with a live camera preview on the left (camera index is a dropdown right below it - pick one and it refreshes automatically) and the rest of the settings organized into tabs on the right:
+   A **setup window** opens first with a live camera preview on the left (the camera dropdown right below it lists connected cameras by name - pick one and the preview switches to it, or click **Refresh** to re-scan after plugging one in. The chosen camera is remembered by name, so it's still selected next time even if adding or removing another camera has shifted its position) and the rest of the settings organized into tabs on the right:
    - **General**: capture button key / quit key (click the field, then press the actual button/key you want - no need to know its name), the fullscreen toggle, and **Remember these settings for next time** (checked by default) - uncheck it to try something out for this run only without overwriting `config.json`. Below that, **Remote Monitor**: an "Enable remote monitor" checkbox (on by default), the port it listens on, a "Show the monitor URL on the start page" checkbox (off by default - the setup screen is the normal way to find the URL, so guests don't see it), and a preview of the URL with a **Copy** button - see [Remote monitoring](#remote-monitoring) below.
    - **Start Page**: the message and optional logo shown fullscreen when the app first launches, before the live camera view (click Browse to pick a PNG/JPG for the logo, Clear to remove it). Pressing the capture button/key here moves on to the live view.
    - **Live View**: the message shown on the TV before a group presses the button, and the countdown length (a dropdown of common values - 3 to 10 seconds - but still editable if you want something else).

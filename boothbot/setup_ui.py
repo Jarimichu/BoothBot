@@ -11,13 +11,13 @@ from tkinter import filedialog, messagebox, ttk
 from PIL import Image, ImageTk
 
 from . import __version__, capture_log, monitor_server, uploader
-from .camera import Camera, CameraError
+from .camera import Camera, CameraError, list_camera_names
 from .config import ROOT_DIR
 
 PREVIEW_SIZE = (480, 360)
 PREVIEW_INTERVAL_MS = 33
 TEST_POLL_INTERVAL_MS = 200
-CAMERA_INDEX_CHOICES = [str(i) for i in range(6)]
+FALLBACK_CAMERA_COUNT = 6  # bare "Camera N" choices offered only if camera names can't be looked up
 COUNTDOWN_CHOICES = [3, 4, 5, 6, 7, 8, 10]
 PHOTO_REVIEW_CHOICES = [3, 4, 5, 6, 8, 10, 15]
 TELEGRAM_RETRY_CHOICES = [0, 1, 2, 3, 5, 10]
@@ -49,6 +49,12 @@ class SetupWindow:
         self.result = None
         self.remember_settings = True
         self.camera = None
+        self.camera_names = None  # from list_camera_names(); None if names couldn't be looked up
+        self.camera_labels = []  # dropdown entries, one per camera index
+        self.selected_camera_index = config_data.get("camera_index", 0)
+        # Set when the saved camera_name isn't connected anymore and the saved index is being
+        # shown in its place - Start asks before going ahead with the stand-in.
+        self._missing_camera_name = None
         self.log_trees = {}
         self.log_row_data = {}
         self.log_destination_summary_vars = {}
@@ -81,7 +87,7 @@ class SetupWindow:
         self.root.resizable(False, False)
         self.root.protocol("WM_DELETE_WINDOW", self._on_quit)
 
-        self.camera_index_var = tk.IntVar(value=config_data.get("camera_index", 0))
+        self.camera_choice_var = tk.StringVar(value="")
         self.camera_status_var = tk.StringVar(value="")
         self.countdown_var = tk.IntVar(value=config_data.get("countdown_seconds", 5))
         self.photo_review_var = tk.IntVar(value=config_data.get("photo_review_seconds", 5))
@@ -115,7 +121,8 @@ class SetupWindow:
         self.telegram_max_retries_var = tk.IntVar(value=config_data.get("telegram_max_retries", 0))
 
         self._build_ui()
-        self._open_camera(self.camera_index_var.get())
+        self._scan_cameras(config_data.get("camera_name", ""))
+        self._open_camera(self.selected_camera_index)
         self._update_preview()
         self._poll_test_results()
 
@@ -137,12 +144,12 @@ class SetupWindow:
 
         camera_row = ttk.Frame(left)
         camera_row.grid(row=2, column=0, sticky="ew")
-        ttk.Label(camera_row, text="Camera index:").pack(side="left")
-        camera_combo = ttk.Combobox(
-            camera_row, textvariable=self.camera_index_var, values=CAMERA_INDEX_CHOICES, width=4
+        ttk.Label(camera_row, text="Camera:").pack(side="left")
+        self.camera_combo = ttk.Combobox(
+            camera_row, textvariable=self.camera_choice_var, state="readonly", width=34
         )
-        camera_combo.pack(side="left", padx=(6, 6))
-        camera_combo.bind("<<ComboboxSelected>>", lambda event: self._on_refresh_camera())
+        self.camera_combo.pack(side="left", padx=(6, 6))
+        self.camera_combo.bind("<<ComboboxSelected>>", lambda event: self._on_camera_selected())
         ttk.Button(camera_row, text="Refresh", command=self._on_refresh_camera).pack(side="left")
 
         ttk.Label(left, textvariable=self.camera_status_var, foreground="#555").grid(
@@ -360,19 +367,84 @@ class SetupWindow:
 
     # ---------- Camera preview ----------
 
+    def _scan_cameras(self, preferred_name):
+        """(Re)reads which cameras are connected and selects preferred_name wherever it sits now,
+        since its index may have shifted since it was last chosen."""
+        self.camera_names = list_camera_names()
+        if self.camera_names is None:
+            self.camera_labels = [f"Camera {i}" for i in range(FALLBACK_CAMERA_COUNT)]
+        else:
+            self.camera_labels = self._label_cameras(self.camera_names)
+        self.camera_combo.configure(values=self.camera_labels)
+
+        index, found = self._resolve_camera_index(self.camera_names, self.selected_camera_index, preferred_name)
+        self.selected_camera_index = index
+        self._missing_camera_name = None if found else preferred_name
+        self.camera_choice_var.set(self._camera_label(index))
+
+    @staticmethod
+    def _label_cameras(names):
+        """Identical webcams report identical names - number the repeats so they can still be told apart."""
+        return [
+            f"{name} ({names[:i].count(name) + 1})" if name in names[:i] else name
+            for i, name in enumerate(names)
+        ]
+
+    @staticmethod
+    def _resolve_camera_index(names, saved_index, saved_name):
+        """Returns (index, found). The saved name wins over the saved index; found is False only
+        when the saved name isn't connected, in which case the saved index is the fallback."""
+        if not saved_name or names is None:
+            return saved_index, True
+        matches = [i for i, name in enumerate(names) if name == saved_name]
+        if not matches:
+            return saved_index, False
+        return (saved_index if saved_index in matches else matches[0]), True
+
+    def _camera_label(self, index):
+        if 0 <= index < len(self.camera_labels):
+            return self.camera_labels[index]
+        return f"Camera {index}"
+
+    def _selected_camera_name(self):
+        """The device name behind the current selection, or "" if it isn't a connected camera
+        (or names couldn't be looked up at all)."""
+        if self.camera_names and 0 <= self.selected_camera_index < len(self.camera_names):
+            return self.camera_names[self.selected_camera_index]
+        return ""
+
     def _open_camera(self, index):
         if self.camera is not None:
             self.camera.release()
             self.camera = None
         try:
             self.camera = Camera(index)
-            self.camera_status_var.set(f"Camera {index}: connected")
         except CameraError:
             self.camera = None
-            self.camera_status_var.set(f"Camera {index}: not available")
+
+        label = self._camera_label(index)
+        if self._missing_camera_name:
+            status = f"{self._missing_camera_name} not found"
+            if self.camera is not None:
+                status += f" - showing {label} instead"
+        elif self.camera is not None:
+            status = f"{label}: connected"
+        elif self.camera_names == []:
+            status = "No cameras found - plug one in, then click Refresh"
+        else:
+            status = f"{label}: not available"
+        self.camera_status_var.set(status)
+
+    def _on_camera_selected(self):
+        self.selected_camera_index = self.camera_combo.current()
+        self._missing_camera_name = None
+        self._open_camera(self.selected_camera_index)
 
     def _on_refresh_camera(self):
-        self._open_camera(self.camera_index_var.get())
+        # A still-missing saved camera takes priority, so plugging it back in and clicking
+        # Refresh brings it back rather than sticking with the stand-in.
+        self._scan_cameras(self._missing_camera_name or self._selected_camera_name())
+        self._open_camera(self.selected_camera_index)
 
     def _on_browse_logo(self):
         path = filedialog.askopenfilename(
@@ -863,17 +935,32 @@ class SetupWindow:
     # ---------- Actions ----------
 
     def _on_start(self):
+        label = self._camera_label(self.selected_camera_index)
         if self.camera is None:
             proceed = messagebox.askyesno(
                 "No camera detected",
-                f"Camera index {self.camera_index_var.get()} isn't available. Start anyway?",
+                "No cameras were found. Start anyway?"
+                if self.camera_names == []
+                else f"{label} isn't available. Start anyway?",
+            )
+            if not proceed:
+                return
+        elif self._missing_camera_name:
+            proceed = messagebox.askyesno(
+                "Camera not found",
+                f'"{self._missing_camera_name}" wasn\'t found. Start with "{label}" instead?',
             )
             if not proceed:
                 return
 
         self.result = {
             **self.initial_config,
-            "camera_index": self.camera_index_var.get(),
+            "camera_index": self.selected_camera_index,
+            # Falls back to the previously saved name when there's no connected, named camera to
+            # take it from, so one setup run without names doesn't forget which camera was chosen.
+            "camera_name": self._selected_camera_name()
+            or self._missing_camera_name
+            or self.initial_config.get("camera_name", ""),
             "countdown_seconds": self.countdown_var.get(),
             "photo_review_seconds": self.photo_review_var.get(),
             "fullscreen": self.fullscreen_var.get(),

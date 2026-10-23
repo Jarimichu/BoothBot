@@ -15,6 +15,9 @@ CONFIG_PATH = ROOT_DIR / "config.json"
 
 DEFAULTS = {
     "camera_index": 0,
+    # Saved alongside camera_index so setup can re-find the same camera after its index shifts
+    # (adding/removing any camera, including virtual ones like OBS's, renumbers the rest).
+    "camera_name": "",
     "countdown_seconds": 5,
     "capture_key": "space",
     "quit_key": "escape",
